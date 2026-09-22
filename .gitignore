@@ -1,0 +1,12 @@
+.gradle/
+.idea/
+.vscode/
+**/bin/
+**/obj/
+**/build/
+local.properties
+*.jks
+*.keystore
+.env
+.env.*
+**/appsettings.Development.json
