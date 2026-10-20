@@ -68,11 +68,11 @@ app.MapGet("/api/banking/status", async (EnableBankingService banking, Cancellat
 .WithName("GetBankingStatus")
 .WithSummary("Reports whether the local Enable Banking sandbox is configured and connected.");
 
-app.MapGet("/api/banking/data", async (EnableBankingService banking, CancellationToken cancellationToken) =>
+app.MapGet("/api/banking/data", async (bool? allTransactions, EnableBankingService banking, CancellationToken cancellationToken) =>
 {
     try
     {
-        return Results.Ok(await banking.GetAccountDataAsync(cancellationToken));
+        return Results.Ok(await banking.GetAccountDataAsync(cancellationToken, allTransactions == true));
     }
     catch (EnableBankingApiException exception)
     {

@@ -35,11 +35,12 @@ data class FinanceTransaction(
     val detail: String,
     val dateLabel: String,
     val amountCents: Long,
-    val category: String
+    val category: String,
+    val bookingDate: String? = null
 )
 
 object FinanceApi {
-    private const val TIMEOUT_MILLIS = 5_000
+    private const val TIMEOUT_MILLIS = 60_000
 
     fun fetchOverview(): FinanceOverview {
         return getJson("/api/overview").toFinanceOverview()
@@ -48,7 +49,7 @@ object FinanceApi {
     fun fetchDashboardOverview(): FinanceOverview {
         val status = getJson("/api/banking/status")
         if (status.optBoolean("isSandbox") && status.optInt("accountCount") > 0) {
-            return getJson("/api/banking/data").toBankingOverview()
+            return getJson("/api/banking/data?allTransactions=true").toBankingOverview()
         }
 
         return fetchOverview()
@@ -159,7 +160,8 @@ object FinanceApi {
                     detail = remittance ?: item.optJSONObject("bank_transaction_code")?.optString("code").cleanValue().orEmpty(),
                     dateLabel = item.optString("booking_date").toGermanDate(),
                     amountCents = signedAmount,
-                    category = if (direction == "CRDT") "Eingang" else "Ausgang"
+                    category = if (direction == "CRDT") "Eingang" else "Ausgang",
+                    bookingDate = item.optString("booking_date").cleanValue()
                 )
             }
         }.orEmpty()
@@ -171,12 +173,9 @@ object FinanceApi {
             ?: "DKK"
         val amountCents = balanceAmount?.optString("amount")?.toMinorUnits() ?: 0L
         val continuationKey = transactionsResponse?.optString("continuation_key")
-        val year = transactionItems?.optJSONObject(0)?.optString("booking_date")?.take(4)
-            ?.takeIf { it.length == 4 }
-
         return FinanceOverview(
             dataSource = "banking_sandbox",
-            month = year?.let { "Testdaten $it" } ?: "Sandbox-Testdaten",
+            month = "Sandbox-Testdaten",
             accountInstitution = optString("institutionName").cleanValue().orEmpty().ifBlank { "Mock ASPSP" },
             accountName = "Sandbox-Konto",
             currency = currency,

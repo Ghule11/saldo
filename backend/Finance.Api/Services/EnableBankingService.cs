@@ -69,7 +69,7 @@ public sealed class EnableBankingService(
             .ToArray();
     }
 
-    public async Task<BankingAccountDataResponse> GetAccountDataAsync(CancellationToken cancellationToken)
+    public async Task<BankingAccountDataResponse> GetAccountDataAsync(CancellationToken cancellationToken, bool allTransactions = false)
     {
         await EnsureSandboxApplicationAsync(cancellationToken);
 
@@ -85,11 +85,44 @@ public sealed class EnableBankingService(
                 $"/accounts/{encodedAccountUid}/balances",
                 null,
                 cancellationToken);
-            var transactions = await SendAsync<JsonElement>(
-                HttpMethod.Get,
-                $"/accounts/{encodedAccountUid}/transactions",
-                null,
-                cancellationToken);
+            var transactionPath = $"/accounts/{encodedAccountUid}/transactions";
+            var transactions = await SendAsync<JsonElement>(HttpMethod.Get, transactionPath, null, cancellationToken);
+
+            if (allTransactions)
+            {
+                var collected = new List<JsonElement>();
+                var seenKeys = new HashSet<string>(StringComparer.Ordinal);
+                for (var page = 0; page < 100; page++)
+                {
+                    if (transactions.TryGetProperty("transactions", out var items) && items.ValueKind == JsonValueKind.Array)
+                    {
+                        collected.AddRange(items.EnumerateArray());
+                    }
+
+                    var continuationKey = transactions.TryGetProperty("continuation_key", out var key)
+                        && key.ValueKind == JsonValueKind.String ? key.GetString() : null;
+                    if (string.IsNullOrWhiteSpace(continuationKey))
+                    {
+                        transactions = JsonSerializer.SerializeToElement(new
+                        {
+                            transactions = collected,
+                            continuation_key = (string?)null
+                        });
+                        break;
+                    }
+
+                    if (!seenKeys.Add(continuationKey) || page == 99)
+                    {
+                        throw new InvalidOperationException("Die Sandbox-Umsätze konnten nicht vollständig geladen werden.");
+                    }
+
+                    transactions = await SendAsync<JsonElement>(
+                        HttpMethod.Get,
+                        $"{transactionPath}?continuation_key={Uri.EscapeDataString(continuationKey)}",
+                        null,
+                        cancellationToken);
+                }
+            }
 
             accounts.Add(new BankingAccountData(balances, transactions));
         }

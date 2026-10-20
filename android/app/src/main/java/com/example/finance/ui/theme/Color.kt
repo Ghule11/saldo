@@ -2,10 +2,8 @@ package com.example.finance.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-val FinanceGreenLight = Color(0xFFB7DCCB)
-val FinanceGreen = Color(0xFF187653)
-val FinanceMint = Color(0xFF4D9A9A)
-
-val FinanceGreenDark = Color(0xFF145C43)
-val FinanceMintDark = Color(0xFF86C5AD)
-val FinanceTealDark = Color(0xFF8ACACA)
+val FinancePurple = Color(0xFFAC8BFF)
+val FinanceBackground = Color(0xFF0B0911)
+val FinanceSurface = Color(0xFF191522)
+val FinanceText = Color(0xFFF6F2FF)
+val FinanceMuted = Color(0xFFADA4BA)

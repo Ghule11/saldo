@@ -9,15 +9,15 @@ Private, Android-only personal finance app. The GitHub repository is named `fina
 
 ## Current app state
 
-The Android app currently shows clearly marked sample balances and transactions, with a category-filtered transaction list. No bank accounts are connected yet.
+The Android app has a dark interface with purple accents, green incoming amounts, and red outgoing amounts. Its four sections show the balance and monthly totals, searchable transactions with month and direction filters, monthly charts and top outflows, and account details with a refresh action.
 
-The backend exposes `GET /api/health` and `GET /api/overview`. The Android app fetches its sample balance, monthly totals, spending categories, and transactions from the backend. OpenAPI is available in the Development environment.
+The backend exposes `GET /api/health` and `GET /api/overview`. Without a connected sandbox account, the Android app displays the clearly marked sample data. OpenAPI is available in the Development environment.
 
 ## Open Banking direction
 
 The planned provider is Enable Banking. Real bank access has not been implemented. Keep provider private keys, banking credentials, account data, and signing keys out of the Android app and Git; common key and certificate files are ignored locally.
 
-The backend includes a sandbox-only Enable Banking authorization flow. When a sandbox account is connected, the Android dashboard displays its provider balance and the currently returned transaction page; otherwise it shows sample data. The connected Mock ASPSP data is synthetic. See [`docs/enable-banking-sandbox.md`](docs/enable-banking-sandbox.md) for local sandbox setup.
+The backend includes a sandbox-only Enable Banking authorization flow. When a sandbox account is connected, the Android app loads all available transaction pages before calculating monthly totals and charts. It labels the historical month shown, so synthetic data is not presented as current account activity. The connected Mock ASPSP data is synthetic. See [`docs/enable-banking-sandbox.md`](docs/enable-banking-sandbox.md) for local sandbox setup.
 
 ## Run locally
 
