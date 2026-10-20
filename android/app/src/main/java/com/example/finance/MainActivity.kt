@@ -5,7 +5,9 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -26,6 +29,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -40,6 +44,7 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -53,6 +58,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -100,6 +106,10 @@ private fun FinanceApp() {
     var isLoading by remember { mutableStateOf(true) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var reloadKey by remember { mutableIntStateOf(0) }
+    val context = LocalContext.current
+    val categoryStore = remember(context) { CategoryOverrideStore(context.applicationContext) }
+    var categoryOverrides by remember { mutableStateOf(categoryStore.load()) }
+    var editingTransaction by remember { mutableStateOf<FinanceTransaction?>(null) }
 
     LaunchedEffect(reloadKey) {
         isLoading = true
@@ -118,7 +128,8 @@ private fun FinanceApp() {
         if (isLoading) LoadingScreen() else ConnectionErrorScreen(errorMessage.orEmpty()) { reloadKey++ }
         return
     }
-    val months = remember(data) { FinanceInsights.months(data) }
+    val categorized = remember(data, categoryOverrides) { FinanceCategories.apply(data, categoryOverrides) }
+    val months = remember(categorized) { FinanceInsights.months(categorized) }
 
     Scaffold(
         containerColor = Background,
@@ -144,11 +155,25 @@ private fun FinanceApp() {
     ) { padding ->
         val modifier = Modifier.padding(padding)
         when (selectedTab) {
-            AppTab.Overview -> OverviewScreen(data, months, modifier)
-            AppTab.Transactions -> TransactionsScreen(data, months, modifier)
-            AppTab.Analysis -> AnalysisScreen(data, months, modifier)
-            AppTab.Account -> AccountScreen(data, months, isLoading, errorMessage, { reloadKey++ }, modifier)
+            AppTab.Overview -> OverviewScreen(categorized, months, { editingTransaction = it }, modifier)
+            AppTab.Transactions -> TransactionsScreen(categorized, months, { editingTransaction = it }, modifier)
+            AppTab.Analysis -> AnalysisScreen(categorized, months, modifier)
+            AppTab.Account -> AccountScreen(categorized, months, categoryOverrides.size, isLoading, errorMessage, { reloadKey++ }, modifier)
         }
+    }
+
+    editingTransaction?.let { transaction ->
+        CategoryDialog(
+            transaction = transaction,
+            onDismiss = { editingTransaction = null },
+            onChoose = { choice ->
+                categoryStore.save(transaction.identity, choice)
+                categoryOverrides = categoryOverrides.toMutableMap().apply {
+                    if (choice == null) remove(transaction.identity) else put(transaction.identity, choice)
+                }
+                editingTransaction = null
+            }
+        )
     }
 }
 
@@ -185,7 +210,7 @@ private fun ConnectionErrorScreen(message: String, onRetry: () -> Unit) {
 }
 
 @Composable
-private fun OverviewScreen(data: FinanceOverview, months: List<MonthlySnapshot>, modifier: Modifier) {
+private fun OverviewScreen(data: FinanceOverview, months: List<MonthlySnapshot>, onTransactionClick: (FinanceTransaction) -> Unit, modifier: Modifier) {
     val current = months.firstOrNull()
     LazyColumn(
         modifier = modifier.fillMaxSize(),
@@ -199,9 +224,10 @@ private fun OverviewScreen(data: FinanceOverview, months: List<MonthlySnapshot>,
             item { SectionHeading("Monatsübersicht", current.label) }
             item { MonthlyTotals(current, data.currency) }
             item { NetCard(current, data.currency) }
+            if (current.transferInCents > 0 || current.transferOutCents > 0) item { TransferCard(current, data.currency) }
             item { MonthlyChart(months, data.currency) }
             item { SectionHeading("Letzte Umsätze", current.label) }
-            items(current.transactions.take(4)) { TransactionRow(it, data.currency) }
+            items(current.transactions.take(4)) { TransactionRow(it, data.currency, onTransactionClick) }
         } else {
             item { EmptyNote("Für dieses Konto sind noch keine datierten Umsätze vorhanden.") }
         }
@@ -209,14 +235,16 @@ private fun OverviewScreen(data: FinanceOverview, months: List<MonthlySnapshot>,
 }
 
 @Composable
-private fun TransactionsScreen(data: FinanceOverview, months: List<MonthlySnapshot>, modifier: Modifier) {
+private fun TransactionsScreen(data: FinanceOverview, months: List<MonthlySnapshot>, onTransactionClick: (FinanceTransaction) -> Unit, modifier: Modifier) {
     var query by rememberSaveable { mutableStateOf("") }
     var direction by rememberSaveable { mutableStateOf("Alle") }
     var monthKey by rememberSaveable { mutableStateOf("all") }
     val selectedMonth = months.firstOrNull { it.key == monthKey }
     val filtered = (selectedMonth?.transactions ?: data.transactions)
-        .filter { direction == "Alle" || (direction == "Eingänge" && it.amountCents > 0) ||
-            (direction == "Ausgänge" && it.amountCents < 0) }
+        .filter { direction == "Alle" ||
+            (direction == "Eingänge" && it.amountCents > 0 && it.category != TransactionCategory.Transfer.label) ||
+            (direction == "Ausgaben" && it.amountCents < 0 && it.category != TransactionCategory.Transfer.label) ||
+            (direction == "Umbuchungen" && it.category == TransactionCategory.Transfer.label) }
         .filter { query.isBlank() || it.merchant.contains(query, ignoreCase = true) ||
             it.detail.contains(query, ignoreCase = true) }
         .sortedByDescending { it.bookingDate ?: "" }
@@ -227,6 +255,7 @@ private fun TransactionsScreen(data: FinanceOverview, months: List<MonthlySnapsh
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item { ScreenTitle("Umsätze", "Suche und filtere deine Bewegungen") }
+        item { EmptyNote("Kategorien sind Vorschläge. Tippe auf einen Umsatz, um ihn anders zuzuordnen.") }
         item {
             OutlinedTextField(
                 value = query,
@@ -247,7 +276,7 @@ private fun TransactionsScreen(data: FinanceOverview, months: List<MonthlySnapsh
                 modifier = Modifier.horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                listOf("Alle", "Eingänge", "Ausgänge").forEach { option ->
+                listOf("Alle", "Eingänge", "Ausgaben", "Umbuchungen").forEach { option ->
                     ChoiceChip(option, direction == option) { direction = option }
                 }
             }
@@ -266,7 +295,7 @@ private fun TransactionsScreen(data: FinanceOverview, months: List<MonthlySnapsh
             }
         }
         item { SectionHeading("Bewegungen", "${filtered.size} Umsätze") }
-        items(filtered) { TransactionRow(it, data.currency) }
+        items(filtered) { TransactionRow(it, data.currency, onTransactionClick) }
         if (filtered.isEmpty()) item { EmptyNote("Keine passenden Umsätze gefunden.") }
     }
 }
@@ -295,8 +324,11 @@ private fun AnalysisScreen(data: FinanceOverview, months: List<MonthlySnapshot>,
             item { SectionHeading(month.label, "${month.transactions.size} Umsätze") }
             item { MonthlyTotals(month, data.currency) }
             item { NetCard(month, data.currency) }
+            if (month.transferInCents > 0 || month.transferOutCents > 0) item { TransferCard(month, data.currency) }
             item { MonthlyChart(months, data.currency) }
+            item { CategoryChart(month, data.currency) }
             item { OutflowChart(month, data.currency) }
+            item { RecurringCard(data, data.currency) }
         } else {
             item { EmptyNote("Noch keine Monatsdaten verfügbar.") }
         }
@@ -307,6 +339,7 @@ private fun AnalysisScreen(data: FinanceOverview, months: List<MonthlySnapshot>,
 private fun AccountScreen(
     data: FinanceOverview,
     months: List<MonthlySnapshot>,
+    correctedCount: Int,
     isLoading: Boolean,
     errorMessage: String?,
     onRefresh: () -> Unit,
@@ -326,6 +359,7 @@ private fun AccountScreen(
                 InfoRow("Institut", data.accountInstitution)
                 InfoRow("Währung", data.currency)
                 InfoRow("Umsätze", "${data.transactions.size}")
+                InfoRow("Eigene Zuordnungen", "$correctedCount")
                 InfoRow("Zeitraum", if (months.isEmpty()) "Keine Daten" else
                     "${months.last().label} – ${months.first().label}")
             }
@@ -399,8 +433,18 @@ private fun NetCard(month: MonthlySnapshot, currency: String) {
             .background(PanelRaised).padding(16.dp),
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        Text("Monatssaldo", color = Muted, fontSize = 13.sp)
+        Text("Überschuss", color = Muted, fontSize = 13.sp)
         Text(formatSigned(month.netCents, currency), color = if (month.netCents >= 0) Green else Red, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable
+private fun TransferCard(month: MonthlySnapshot, currency: String) {
+    PanelCard {
+        SectionHeading("Umbuchungen", "Nicht als Ausgabe gezählt")
+        Spacer(Modifier.height(9.dp))
+        if (month.transferOutCents > 0) Text("Ausgehend  −${formatCurrency(month.transferOutCents, currency)}", color = Purple, fontSize = 13.sp)
+        if (month.transferInCents > 0) Text("Eingehend  +${formatCurrency(month.transferInCents, currency)}", color = Purple, fontSize = 13.sp)
     }
 }
 
@@ -443,7 +487,7 @@ private fun ChartBar(value: Long, maximum: Long, color: Color) {
 private fun OutflowChart(month: MonthlySnapshot, currency: String) {
     val merchants = FinanceInsights.topOutflows(month)
     PanelCard {
-        SectionHeading("Größte Ausgänge", month.label)
+        SectionHeading("Größte Ausgaben", month.label)
         Spacer(Modifier.height(15.dp))
         if (merchants.isEmpty()) {
             Text("Keine Ausgänge in diesem Monat.", color = Muted, fontSize = 13.sp)
@@ -466,6 +510,50 @@ private fun OutflowChart(month: MonthlySnapshot, currency: String) {
 }
 
 @Composable
+private fun CategoryChart(month: MonthlySnapshot, currency: String) {
+    val categories = FinanceInsights.expenseCategories(month)
+    PanelCard {
+        SectionHeading("Ausgaben nach Kategorie", month.label)
+        Spacer(Modifier.height(15.dp))
+        if (categories.isEmpty()) {
+            Text("Keine Ausgaben in diesem Monat.", color = Muted, fontSize = 13.sp)
+        } else {
+            categories.forEach { category ->
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(category.name, color = Ink, fontSize = 12.sp)
+                    Text(formatCurrency(category.amountCents, currency), color = Red, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                }
+                Spacer(Modifier.height(5.dp))
+                Box(Modifier.fillMaxWidth().height(6.dp).clip(CircleShape).background(PurpleMuted)) {
+                    Box(Modifier.fillMaxWidth(category.fraction.coerceIn(0f, 1f)).fillMaxHeight().background(Red))
+                }
+                Spacer(Modifier.height(14.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun RecurringCard(data: FinanceOverview, currency: String) {
+    val recurring = remember(data) { FinanceInsights.recurringExpenses(data) }
+    if (recurring.isEmpty()) return
+    PanelCard {
+        SectionHeading("Möglicherweise regelmäßig", "Mindestens 3 Monate")
+        Spacer(Modifier.height(12.dp))
+        recurring.forEach { item ->
+            Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                Column(Modifier.weight(1f)) {
+                    Text(item.name, color = Ink, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text("In ${item.monthCount} Monaten", color = Muted, fontSize = 10.sp)
+                }
+                Spacer(Modifier.width(8.dp))
+                Text(formatCurrency(item.amountCents, currency), color = Red, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            }
+        }
+    }
+}
+
+@Composable
 private fun LegendDot(label: String, color: Color) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(8.dp).clip(CircleShape).background(color))
@@ -475,26 +563,57 @@ private fun LegendDot(label: String, color: Color) {
 }
 
 @Composable
-private fun TransactionRow(transaction: FinanceTransaction, currency: String) {
+private fun TransactionRow(transaction: FinanceTransaction, currency: String, onClick: (FinanceTransaction) -> Unit) {
     val incoming = transaction.amountCents >= 0
-    val accent = if (incoming) Green else Red
+    val transfer = transaction.category == TransactionCategory.Transfer.label
+    val accent = if (transfer) Purple else if (incoming) Green else Red
     Row(
         modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp))
-            .background(Panel).padding(horizontal = 14.dp, vertical = 13.dp),
+            .background(Panel).clickable { onClick(transaction) }.padding(horizontal = 14.dp, vertical = 13.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(Modifier.size(42.dp).clip(CircleShape).background(accent.copy(alpha = 0.14f)), contentAlignment = Alignment.Center) {
-            Text(if (incoming) "↓" else "↑", color = accent, fontSize = 19.sp, fontWeight = FontWeight.Bold)
+            Text(if (transfer) "⇄" else if (incoming) "↓" else "↑", color = accent, fontSize = 19.sp, fontWeight = FontWeight.Bold)
         }
         Spacer(Modifier.width(11.dp))
         Column(Modifier.weight(1f)) {
             Text(transaction.merchant, color = Ink, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Spacer(Modifier.height(3.dp))
-            Text("${if (incoming) "Eingang" else "Ausgang"} · ${transaction.dateLabel}", color = Muted, fontSize = 11.sp, maxLines = 1)
+            Text("${transaction.category} · ${transaction.dateLabel}", color = Muted, fontSize = 11.sp, maxLines = 1)
         }
         Spacer(Modifier.width(8.dp))
         Text(formatSigned(transaction.amountCents, currency), color = accent, fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1)
     }
+}
+
+@Composable
+private fun CategoryDialog(
+    transaction: FinanceTransaction,
+    onDismiss: () -> Unit,
+    onChoose: (TransactionCategory?) -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Panel,
+        title = { Text("Umsatz zuordnen", color = Ink, fontWeight = FontWeight.Bold) },
+        text = {
+            Column {
+                Text(transaction.merchant, color = Muted, fontSize = 13.sp, maxLines = 2)
+                Spacer(Modifier.height(9.dp))
+                Column(Modifier.heightIn(max = 380.dp).verticalScroll(rememberScrollState())) {
+                    FinanceCategories.choices(transaction).forEach { category ->
+                        TextButton(onClick = { onChoose(category) }, modifier = Modifier.fillMaxWidth()) {
+                            Text(category.label, color = if (transaction.category == category.label) Purple else Ink)
+                        }
+                    }
+                    TextButton(onClick = { onChoose(null) }, modifier = Modifier.fillMaxWidth()) {
+                        Text("Automatische Zuordnung", color = Muted)
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Schließen", color = Purple) } }
+    )
 }
 
 @Composable

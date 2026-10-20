@@ -6,6 +6,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.math.BigDecimal
 import java.math.RoundingMode
+import java.security.MessageDigest
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -36,7 +37,8 @@ data class FinanceTransaction(
     val dateLabel: String,
     val amountCents: Long,
     val category: String,
-    val bookingDate: String? = null
+    val bookingDate: String? = null,
+    val identity: String = ""
 )
 
 object FinanceApi {
@@ -96,7 +98,9 @@ object FinanceApi {
                 detail = item.getString("detail"),
                 dateLabel = item.getString("dateLabel"),
                 amountCents = item.getLong("amountCents"),
-                category = item.getString("category")
+                category = item.getString("category"),
+                identity = fingerprint("sample", item.getString("merchant"), item.getString("detail"),
+                    item.getString("dateLabel"), item.getLong("amountCents").toString())
             )
         }
 
@@ -161,7 +165,18 @@ object FinanceApi {
                     dateLabel = item.optString("booking_date").toGermanDate(),
                     amountCents = signedAmount,
                     category = if (direction == "CRDT") "Eingang" else "Ausgang",
-                    bookingDate = item.optString("booking_date").cleanValue()
+                    bookingDate = item.optString("booking_date").cleanValue(),
+                    identity = fingerprint(
+                        "banking_sandbox",
+                        optString("institutionName"),
+                        item.optString("entry_reference"),
+                        item.optString("booking_date"),
+                        signedAmount.toString(),
+                        remittance.orEmpty(),
+                        item.optJSONObject("creditor")?.optString("name").orEmpty(),
+                        item.optJSONObject("debtor")?.optString("name").orEmpty(),
+                        item.optString("reference_number")
+                    )
                 )
             }
         }.orEmpty()
@@ -200,4 +215,8 @@ object FinanceApi {
     } catch (_: Exception) {
         this
     }
+
+    private fun fingerprint(vararg parts: String): String = MessageDigest.getInstance("SHA-256")
+        .digest(parts.joinToString("\u001f").toByteArray(Charsets.UTF_8))
+        .joinToString("") { "%02x".format(it) }
 }
