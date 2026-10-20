@@ -58,15 +58,15 @@ app.MapGet("/api/banking/status", async (EnableBankingService banking, Cancellat
     }
     catch (CryptographicException)
     {
-        return Results.Problem("Der konfigurierte private Sandbox-Schlüssel ist ungültig.", statusCode: 500);
+        return Results.Problem("Der konfigurierte private Schlüssel ist ungültig.", statusCode: 500);
     }
     catch (IOException)
     {
-        return Results.Problem("Der konfigurierte private Sandbox-Schlüssel konnte nicht gelesen werden.", statusCode: 500);
+        return Results.Problem("Der konfigurierte private Schlüssel konnte nicht gelesen werden.", statusCode: 500);
     }
 })
 .WithName("GetBankingStatus")
-.WithSummary("Reports whether the local Enable Banking sandbox is configured and connected.");
+.WithSummary("Reports the selected Enable Banking environment and connection status.");
 
 app.MapGet("/api/banking/data", async (bool? allTransactions, EnableBankingService banking, CancellationToken cancellationToken) =>
 {
@@ -80,19 +80,19 @@ app.MapGet("/api/banking/data", async (bool? allTransactions, EnableBankingServi
     }
     catch (InvalidOperationException exception)
     {
-        return Results.Problem(exception.Message, statusCode: 409, title: "No sandbox account is connected");
+        return Results.Problem(exception.Message, statusCode: 409, title: "No bank account is connected");
     }
     catch (CryptographicException)
     {
-        return Results.Problem("Der konfigurierte private Sandbox-Schlüssel ist ungültig.", statusCode: 500);
+        return Results.Problem("Der konfigurierte private Schlüssel ist ungültig.", statusCode: 500);
     }
     catch (IOException)
     {
-        return Results.Problem("Der konfigurierte private Sandbox-Schlüssel konnte nicht gelesen werden.", statusCode: 500);
+        return Results.Problem("Der konfigurierte private Schlüssel konnte nicht gelesen werden.", statusCode: 500);
     }
 })
 .WithName("GetBankingData")
-.WithSummary("Fetches balances and transactions for connected sandbox accounts.");
+.WithSummary("Fetches balances and transactions for the connected account in the selected environment.");
 
 app.MapGet("/api/banking/institutions", async (
     string? country,
@@ -109,19 +109,19 @@ app.MapGet("/api/banking/institutions", async (
     }
     catch (InvalidOperationException exception)
     {
-        return Results.Problem(exception.Message, statusCode: 503, title: "Enable Banking sandbox is not configured");
+        return Results.Problem(exception.Message, statusCode: 503, title: "Enable Banking is not ready");
     }
     catch (CryptographicException)
     {
-        return Results.Problem("Der konfigurierte private Sandbox-Schlüssel ist ungültig.", statusCode: 500);
+        return Results.Problem("Der konfigurierte private Schlüssel ist ungültig.", statusCode: 500);
     }
     catch (IOException)
     {
-        return Results.Problem("Der konfigurierte private Sandbox-Schlüssel konnte nicht gelesen werden.", statusCode: 500);
+        return Results.Problem("Der konfigurierte private Schlüssel konnte nicht gelesen werden.", statusCode: 500);
     }
 })
 .WithName("GetBankingInstitutions")
-.WithSummary("Lists institutions available to the registered Enable Banking sandbox application.");
+.WithSummary("Lists institutions available to the selected Enable Banking application.");
 
 app.MapPost("/api/banking/authorization", async (
     StartBankAuthorizationRequest request,
@@ -147,19 +147,47 @@ app.MapPost("/api/banking/authorization", async (
     }
     catch (InvalidOperationException exception)
     {
-        return Results.Problem(exception.Message, statusCode: 503, title: "Enable Banking sandbox is not configured");
+        return Results.Problem(exception.Message, statusCode: 503, title: "Enable Banking is not ready");
     }
     catch (CryptographicException)
     {
-        return Results.Problem("Der konfigurierte private Sandbox-Schlüssel ist ungültig.", statusCode: 500);
+        return Results.Problem("Der konfigurierte private Schlüssel ist ungültig.", statusCode: 500);
     }
     catch (IOException)
     {
-        return Results.Problem("Der konfigurierte private Sandbox-Schlüssel konnte nicht gelesen werden.", statusCode: 500);
+        return Results.Problem("Der konfigurierte private Schlüssel konnte nicht gelesen werden.", statusCode: 500);
     }
 })
 .WithName("StartBankingAuthorization")
-.WithSummary("Starts an Enable Banking SANDBOX authorization for the selected test institution.");
+.WithSummary("Starts authorization for a selected institution in the configured environment.");
+
+app.MapPost("/api/banking/authorization/bank-austria", async (
+    EnableBankingService banking,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        return Results.Ok(await banking.StartBankAustriaAuthorizationAsync(cancellationToken));
+    }
+    catch (EnableBankingApiException exception)
+    {
+        return Results.Problem(exception.Message, statusCode: exception.StatusCode);
+    }
+    catch (InvalidOperationException exception)
+    {
+        return Results.Problem(exception.Message, statusCode: 503);
+    }
+    catch (CryptographicException)
+    {
+        return Results.Problem("Der konfigurierte private Schlüssel ist ungültig.", statusCode: 500);
+    }
+    catch (IOException)
+    {
+        return Results.Problem("Der konfigurierte private Schlüssel konnte nicht gelesen werden.", statusCode: 500);
+    }
+})
+.WithName("StartBankAustriaAuthorization")
+.WithSummary("Starts personal Bank Austria account authorization through an active restricted production application.");
 
 app.MapGet("/api/banking/callback", async (
     string? code,
@@ -178,7 +206,7 @@ app.MapGet("/api/banking/callback", async (
 
         return CallbackPage(
             "Verbindung abgebrochen",
-            string.IsNullOrWhiteSpace(error_description) ? "Die Sandbox-Autorisierung wurde abgebrochen." : error_description,
+            string.IsNullOrWhiteSpace(error_description) ? "Die Konto-Freigabe wurde abgebrochen." : error_description,
             StatusCodes.Status400BadRequest);
     }
 
@@ -191,33 +219,33 @@ app.MapGet("/api/banking/callback", async (
     {
         var result = await banking.CompleteAuthorizationAsync(code, state, cancellationToken);
         return CallbackPage(
-            "Sandbox verbunden",
-            $"{result.InstitutionName} wurde autorisiert. Zurück zu Saldo wechseln. Gefundene Testkonten: {result.AccountCount}.",
+            "Konto verbunden",
+            $"{result.InstitutionName} wurde autorisiert. Zurück zu Saldo wechseln und Daten aktualisieren. Gefundene Konten: {result.AccountCount}.",
             StatusCodes.Status200OK);
     }
     catch (EnableBankingApiException exception)
     {
-        return CallbackPage("Sandbox-Verbindung fehlgeschlagen", exception.Message, exception.StatusCode);
+        return CallbackPage("Konto-Verbindung fehlgeschlagen", exception.Message, exception.StatusCode);
     }
     catch (ArgumentException exception)
     {
-        return CallbackPage("Sandbox-Verbindung fehlgeschlagen", exception.Message, StatusCodes.Status400BadRequest);
+        return CallbackPage("Konto-Verbindung fehlgeschlagen", exception.Message, StatusCodes.Status400BadRequest);
     }
     catch (InvalidOperationException exception)
     {
-        return CallbackPage("Sandbox nicht verfügbar", exception.Message, StatusCodes.Status503ServiceUnavailable);
+        return CallbackPage("Konto nicht verfügbar", exception.Message, StatusCodes.Status503ServiceUnavailable);
     }
     catch (CryptographicException)
     {
-        return CallbackPage("Sandbox nicht verfügbar", "Der konfigurierte private Sandbox-Schlüssel ist ungültig.", StatusCodes.Status500InternalServerError);
+        return CallbackPage("Konto nicht verfügbar", "Der konfigurierte private Schlüssel ist ungültig.", StatusCodes.Status500InternalServerError);
     }
     catch (IOException)
     {
-        return CallbackPage("Sandbox nicht verfügbar", "Der konfigurierte private Sandbox-Schlüssel konnte nicht gelesen werden.", StatusCodes.Status500InternalServerError);
+        return CallbackPage("Konto nicht verfügbar", "Der konfigurierte private Schlüssel konnte nicht gelesen werden.", StatusCodes.Status500InternalServerError);
     }
 })
 .WithName("CompleteBankingAuthorization")
-.WithSummary("Receives the sandbox authorization callback and exchanges its code for a sandbox session.");
+.WithSummary("Receives the authorization callback and exchanges its code for a session.");
 
 app.Run();
 

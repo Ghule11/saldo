@@ -26,7 +26,7 @@ object FinanceInsights {
     private val shortMonthFormat = DateTimeFormatter.ofPattern("MMM yy", Locale.GERMAN)
 
     fun months(overview: FinanceOverview): List<MonthlySnapshot> {
-        if (overview.dataSource != "banking_sandbox") {
+        if (!overview.dataSource.startsWith("banking_")) {
             return listOf(
                 snapshot("sample", overview.month, overview.month.take(3) + " " + overview.month.takeLast(2), overview.transactions)
             )

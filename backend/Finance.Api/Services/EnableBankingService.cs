@@ -20,9 +20,18 @@ public sealed class EnableBankingService(
         PropertyNameCaseInsensitive = true
     };
 
-    private readonly string? _applicationId = configuration["EnableBanking:ApplicationId"];
-    private readonly string? _privateKeyPath = configuration["EnableBanking:PrivateKeyPath"];
-    private readonly string _redirectUrl = configuration["EnableBanking:RedirectUrl"]
+    private readonly string _mode = configuration["EnableBanking:Mode"]?.ToUpperInvariant() == "PRODUCTION"
+        ? "PRODUCTION" : "SANDBOX";
+    private readonly string? _applicationId = configuration["EnableBanking:Mode"]?.ToUpperInvariant() == "PRODUCTION"
+        ? configuration["EnableBanking:Production:ApplicationId"]
+        : configuration["EnableBanking:ApplicationId"];
+    private readonly string? _privateKeyPath = configuration["EnableBanking:Mode"]?.ToUpperInvariant() == "PRODUCTION"
+        ? configuration["EnableBanking:Production:PrivateKeyPath"]
+        : configuration["EnableBanking:PrivateKeyPath"];
+    private readonly string _redirectUrl = configuration["EnableBanking:Mode"]?.ToUpperInvariant() == "PRODUCTION"
+        ? configuration["EnableBanking:Production:RedirectUrl"]
+            ?? "http://10.0.2.2:5006/api/banking/callback"
+        : configuration["EnableBanking:RedirectUrl"]
         ?? "http://10.0.2.2:5006/api/banking/callback";
 
     public bool IsConfigured =>
@@ -34,12 +43,13 @@ public sealed class EnableBankingService(
     {
         if (!IsConfigured)
         {
-            return new BankingStatus(false, false, "NOT_CONFIGURED", null, null, 0);
+            return new BankingStatus(false, _mode == "SANDBOX", _mode, null, null, 0, false);
         }
 
         var application = await GetApplicationAsync(cancellationToken);
-        var isSandbox = string.Equals(application.Environment, "SANDBOX", StringComparison.OrdinalIgnoreCase);
-        var connected = isSandbox ? sessionStore.ConnectedSession : null;
+        EnsureExpectedEnvironment(application);
+        var isSandbox = _mode == "SANDBOX";
+        var connected = sessionStore.GetConnectedSession(_mode);
 
         return new BankingStatus(
             IsConfigured,
@@ -47,14 +57,15 @@ public sealed class EnableBankingService(
             application.Environment,
             connected?.InstitutionName,
             connected?.InstitutionCountry,
-            connected?.AccountUids.Count ?? 0);
+            connected?.AccountUids.Count ?? 0,
+            application.Active);
     }
 
     public async Task<IReadOnlyList<EnableBankingInstitution>> GetInstitutionsAsync(
         string? country,
         CancellationToken cancellationToken)
     {
-        await EnsureSandboxApplicationAsync(cancellationToken);
+        await EnsureActiveApplicationAsync(cancellationToken);
         var response = await SendAsync<EnableBankingInstitutionsResponse>(
             HttpMethod.Get,
             "/aspsps",
@@ -71,10 +82,10 @@ public sealed class EnableBankingService(
 
     public async Task<BankingAccountDataResponse> GetAccountDataAsync(CancellationToken cancellationToken, bool allTransactions = false)
     {
-        await EnsureSandboxApplicationAsync(cancellationToken);
+        await EnsureActiveApplicationAsync(cancellationToken);
 
-        var connected = sessionStore.ConnectedSession
-            ?? throw new InvalidOperationException("Zuerst ein Sandbox-Konto verbinden.");
+        var connected = sessionStore.GetConnectedSession(_mode)
+            ?? throw new InvalidOperationException("Zuerst ein Konto verbinden.");
 
         var accounts = new List<BankingAccountData>();
         foreach (var accountUid in connected.AccountUids)
@@ -113,7 +124,7 @@ public sealed class EnableBankingService(
 
                     if (!seenKeys.Add(continuationKey) || page == 99)
                     {
-                        throw new InvalidOperationException("Die Sandbox-Umsätze konnten nicht vollständig geladen werden.");
+                        throw new InvalidOperationException("Die Umsätze konnten nicht vollständig geladen werden.");
                     }
 
                     transactions = await SendAsync<JsonElement>(
@@ -137,7 +148,7 @@ public sealed class EnableBankingService(
         StartBankAuthorizationRequest request,
         CancellationToken cancellationToken)
     {
-        await EnsureSandboxApplicationAsync(cancellationToken);
+        await EnsureActiveApplicationAsync(cancellationToken);
 
         var institutions = await GetInstitutionsAsync(request.Country, cancellationToken);
         var institution = institutions.FirstOrDefault(item =>
@@ -145,7 +156,7 @@ public sealed class EnableBankingService(
 
         if (institution is null)
         {
-            throw new ArgumentException("Diese Testbank ist in der Sandbox nicht verfügbar.");
+            throw new ArgumentException("Diese Bank ist für die konfigurierte Anwendung nicht verfügbar.");
         }
 
         var state = Guid.NewGuid().ToString("D");
@@ -171,9 +182,29 @@ public sealed class EnableBankingService(
             state,
             institution.Name,
             institution.Country,
-            DateTimeOffset.UtcNow.AddMinutes(10)));
+            DateTimeOffset.UtcNow.AddMinutes(10),
+            _mode));
 
         return new AuthorizationStartResult(response.Url, state, _redirectUrl);
+    }
+
+    public async Task<AuthorizationStartResult> StartBankAustriaAuthorizationAsync(CancellationToken cancellationToken)
+    {
+        if (_mode != "PRODUCTION")
+        {
+            throw new InvalidOperationException("Für Bank Austria muss Saldo auf die Production-Anwendung umgestellt werden.");
+        }
+
+        var matches = (await GetInstitutionsAsync("AT", cancellationToken))
+            .Where(item => item.Name.Contains("Bank Austria", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        if (matches.Length != 1)
+        {
+            throw new InvalidOperationException("Bank Austria konnte nicht eindeutig gefunden werden. Prüfe die verfügbaren Banken im Enable-Banking-Konto.");
+        }
+
+        return await StartAuthorizationAsync(
+            new StartBankAuthorizationRequest(matches[0].Name, "AT"), cancellationToken);
     }
 
     public async Task<AuthorizationCompletionResult> CompleteAuthorizationAsync(
@@ -187,7 +218,12 @@ public sealed class EnableBankingService(
             throw new ArgumentException("Der Autorisierungsstatus ist ungültig oder abgelaufen. Starte die Verbindung erneut.");
         }
 
-        await EnsureSandboxApplicationAsync(cancellationToken);
+        if (pending.Environment != _mode)
+        {
+            throw new ArgumentException("Die Anwendung wurde während der Freigabe gewechselt. Starte die Verbindung erneut.");
+        }
+
+        await EnsureActiveApplicationAsync(cancellationToken);
         var response = await SendAsync<AuthorizeSessionResponse>(
             HttpMethod.Post,
             "/sessions",
@@ -200,7 +236,13 @@ public sealed class EnableBankingService(
             .Distinct(StringComparer.Ordinal)
             .ToArray();
 
-        sessionStore.SetConnectedSession(new ConnectedBankSession(
+        if (accountUids.Length == 0)
+        {
+            throw new InvalidOperationException(
+                "Enable Banking hat kein Konto freigegeben. Verknüpfe genau dieses Konto zuerst mit der Production-Anwendung im Control Panel.");
+        }
+
+        sessionStore.SetConnectedSession(_mode, new ConnectedBankSession(
             response.SessionId,
             pending.InstitutionName,
             pending.InstitutionCountry,
@@ -209,18 +251,28 @@ public sealed class EnableBankingService(
         return new AuthorizationCompletionResult(pending.InstitutionName, pending.InstitutionCountry, accountUids.Length);
     }
 
-    public ConnectedBankSession? GetConnectedSession() => sessionStore.ConnectedSession;
+    public ConnectedBankSession? GetConnectedSession() => sessionStore.GetConnectedSession(_mode);
 
     public void CancelAuthorization(string state) => sessionStore.TryConsumePendingAuthorization(state, out _);
 
-    private async Task EnsureSandboxApplicationAsync(CancellationToken cancellationToken)
+    private async Task EnsureActiveApplicationAsync(CancellationToken cancellationToken)
     {
         EnsureConfigured();
         var application = await GetApplicationAsync(cancellationToken);
-        if (!string.Equals(application.Environment, "SANDBOX", StringComparison.OrdinalIgnoreCase))
+        EnsureExpectedEnvironment(application);
+        if (!application.Active)
         {
             throw new InvalidOperationException(
-                "Saldo erlaubt für diesen Ablauf nur eine Enable Banking App aus der SANDBOX-Umgebung.");
+                "Die Enable-Banking-Anwendung ist noch nicht aktiv. Verknüpfe zuerst dein eigenes Konto im Control Panel.");
+        }
+    }
+
+    private void EnsureExpectedEnvironment(EnableBankingApplication application)
+    {
+        if (!string.Equals(application.Environment, _mode, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"Die konfigurierte Enable-Banking-Anwendung gehört zu {application.Environment}, erwartet wird {_mode}.");
         }
     }
 
@@ -235,7 +287,7 @@ public sealed class EnableBankingService(
         if (!IsConfigured)
         {
             throw new InvalidOperationException(
-                "Enable Banking ist noch nicht eingerichtet. Hinterlege ApplicationId und PrivateKeyPath in den lokalen .NET User Secrets.");
+                $"Enable Banking {_mode} ist noch nicht eingerichtet. Hinterlege ApplicationId und PrivateKeyPath in den lokalen .NET User Secrets.");
         }
     }
 
@@ -316,22 +368,25 @@ public sealed class BankingSessionStore
 {
     private readonly ConcurrentDictionary<string, PendingAuthorization> _pending = new(StringComparer.Ordinal);
     private readonly IDataProtector _protector;
-    private readonly string _sessionFilePath;
-    private ConnectedBankSession? _connectedSession;
+    private readonly string _storageDirectory;
+    private ConnectedBankSession? _sandboxSession;
+    private ConnectedBankSession? _productionSession;
 
     public BankingSessionStore(IDataProtectionProvider dataProtectionProvider)
     {
         _protector = dataProtectionProvider.CreateProtector("FinanceApp.Saldo.EnableBankingSession.v1");
 
-        var storageDirectory = Path.Combine(
+        _storageDirectory = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "Saldo");
-        Directory.CreateDirectory(storageDirectory);
-        _sessionFilePath = Path.Combine(storageDirectory, "enable-banking-session.bin");
-        _connectedSession = LoadConnectedSession();
+        Directory.CreateDirectory(_storageDirectory);
+        _sandboxSession = LoadConnectedSession("SANDBOX");
+        _productionSession = LoadConnectedSession("PRODUCTION");
     }
 
-    public ConnectedBankSession? ConnectedSession => Volatile.Read(ref _connectedSession);
+    public ConnectedBankSession? GetConnectedSession(string environment) => environment == "PRODUCTION"
+        ? Volatile.Read(ref _productionSession)
+        : Volatile.Read(ref _sandboxSession);
 
     public void AddPendingAuthorization(PendingAuthorization authorization)
     {
@@ -346,26 +401,33 @@ public sealed class BankingSessionStore
     public bool TryConsumePendingAuthorization(string state, out PendingAuthorization authorization) =>
         _pending.TryRemove(state, out authorization!);
 
-    public void SetConnectedSession(ConnectedBankSession session)
+    public void SetConnectedSession(string environment, ConnectedBankSession session)
     {
         var serialized = JsonSerializer.SerializeToUtf8Bytes(session);
         var protectedData = _protector.Protect(serialized);
-        var temporaryPath = $"{_sessionFilePath}.tmp";
+        var sessionFilePath = SessionFilePath(environment);
+        var temporaryPath = $"{sessionFilePath}.tmp";
         File.WriteAllBytes(temporaryPath, protectedData);
-        File.Move(temporaryPath, _sessionFilePath, overwrite: true);
-        Volatile.Write(ref _connectedSession, session);
+        File.Move(temporaryPath, sessionFilePath, overwrite: true);
+        if (environment == "PRODUCTION") Volatile.Write(ref _productionSession, session);
+        else Volatile.Write(ref _sandboxSession, session);
     }
 
-    private ConnectedBankSession? LoadConnectedSession()
+    private string SessionFilePath(string environment) => Path.Combine(
+        _storageDirectory,
+        environment == "PRODUCTION" ? "enable-banking-production-session.bin" : "enable-banking-session.bin");
+
+    private ConnectedBankSession? LoadConnectedSession(string environment)
     {
-        if (!File.Exists(_sessionFilePath))
+        var sessionFilePath = SessionFilePath(environment);
+        if (!File.Exists(sessionFilePath))
         {
             return null;
         }
 
         try
         {
-            var protectedData = File.ReadAllBytes(_sessionFilePath);
+            var protectedData = File.ReadAllBytes(sessionFilePath);
             var serialized = _protector.Unprotect(protectedData);
             return JsonSerializer.Deserialize<ConnectedBankSession>(serialized);
         }
@@ -383,7 +445,8 @@ public sealed record BankingStatus(
     string Environment,
     string? InstitutionName,
     string? InstitutionCountry,
-    int AccountCount);
+    int AccountCount,
+    bool IsActive);
 public sealed record BankingAccountDataResponse(
     string InstitutionName,
     string InstitutionCountry,
@@ -395,7 +458,8 @@ public sealed record PendingAuthorization(
     string State,
     string InstitutionName,
     string InstitutionCountry,
-    DateTimeOffset ExpiresAt);
+    DateTimeOffset ExpiresAt,
+    string Environment);
 public sealed record ConnectedBankSession(
     string SessionId,
     string InstitutionName,
@@ -419,7 +483,8 @@ public sealed record EnableBankingInstitution(
     [property: JsonPropertyName("sandbox")] JsonElement? Sandbox);
 
 public sealed record EnableBankingApplication(
-    [property: JsonPropertyName("environment")] string Environment);
+    [property: JsonPropertyName("environment")] string Environment,
+    [property: JsonPropertyName("active")] bool Active);
 
 public sealed record StartAuthorizationPayload(
     [property: JsonPropertyName("access")] AccessRequest Access,

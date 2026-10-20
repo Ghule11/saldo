@@ -1,5 +1,7 @@
 package com.example.finance
 
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -46,11 +48,13 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -65,11 +69,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.example.finance.ui.theme.FinanceTheme
 import java.text.NumberFormat
 import java.util.Currency
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 private val Background = Color(0xFF0B0911)
@@ -106,16 +113,41 @@ private fun FinanceApp() {
     var isLoading by remember { mutableStateOf(true) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var reloadKey by remember { mutableIntStateOf(0) }
+    var bankingStatus by remember { mutableStateOf<BankingConnectionStatus?>(null) }
+    var isConnecting by remember { mutableStateOf(false) }
+    var connectError by remember { mutableStateOf<String?>(null) }
+    var authorizationStarted by remember { mutableStateOf(false) }
     val context = LocalContext.current
+    val lifecycleOwner = context as ComponentActivity
+    val scope = rememberCoroutineScope()
     val categoryStore = remember(context) { CategoryOverrideStore(context.applicationContext) }
     var categoryOverrides by remember { mutableStateOf(categoryStore.load()) }
     var editingTransaction by remember { mutableStateOf<FinanceTransaction?>(null) }
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME && authorizationStarted) {
+                authorizationStarted = false
+                reloadKey++
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     LaunchedEffect(reloadKey) {
         isLoading = true
         errorMessage = null
         try {
-            overview = withContext(Dispatchers.IO) { FinanceApi.fetchDashboardOverview() }
+            val status = withContext(Dispatchers.IO) { FinanceApi.fetchBankingStatus() }
+            bankingStatus = status
+            overview = try {
+                withContext(Dispatchers.IO) { FinanceApi.fetchDashboardOverview(status) }
+            } catch (exception: Exception) {
+                if (status.environment != "PRODUCTION") throw exception
+                errorMessage = "Bankdaten konnten nicht geladen werden: ${exception.message ?: "Verbindung abgelaufen"}"
+                withContext(Dispatchers.IO) { FinanceApi.fetchOverview() }
+            }
         } catch (_: Exception) {
             errorMessage = "Die Finanzdaten konnten nicht geladen werden. Prüfe, ob Saldo auf dem Computer läuft."
         } finally {
@@ -158,7 +190,27 @@ private fun FinanceApp() {
             AppTab.Overview -> OverviewScreen(categorized, months, { editingTransaction = it }, modifier)
             AppTab.Transactions -> TransactionsScreen(categorized, months, { editingTransaction = it }, modifier)
             AppTab.Analysis -> AnalysisScreen(categorized, months, modifier)
-            AppTab.Account -> AccountScreen(categorized, months, categoryOverrides.size, isLoading, errorMessage, { reloadKey++ }, modifier)
+            AppTab.Account -> AccountScreen(
+                categorized, months, categoryOverrides.size, bankingStatus, isLoading,
+                isConnecting, errorMessage, connectError, { reloadKey++ },
+                {
+                    if (!isConnecting) {
+                        isConnecting = true
+                        connectError = null
+                        scope.launch {
+                            try {
+                                val url = withContext(Dispatchers.IO) { FinanceApi.startBankAustriaAuthorization() }
+                                authorizationStarted = true
+                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                            } catch (exception: Exception) {
+                                authorizationStarted = false
+                                connectError = exception.message ?: "Die Verbindung konnte nicht gestartet werden."
+                            } finally {
+                                isConnecting = false
+                            }
+                        }
+                    }
+                }, modifier)
         }
     }
 
@@ -218,7 +270,7 @@ private fun OverviewScreen(data: FinanceOverview, months: List<MonthlySnapshot>,
         verticalArrangement = Arrangement.spacedBy(17.dp)
     ) {
         item { ScreenTitle("Saldo", "Dein Geld im Blick") }
-        item { DataSourceBanner(data.dataSource == "banking_sandbox") }
+        item { DataSourceBanner(data.dataSource) }
         item { BalanceCard(data) }
         if (current != null) {
             item { SectionHeading("Monatsübersicht", current.label) }
@@ -340,9 +392,13 @@ private fun AccountScreen(
     data: FinanceOverview,
     months: List<MonthlySnapshot>,
     correctedCount: Int,
+    bankingStatus: BankingConnectionStatus?,
     isLoading: Boolean,
+    isConnecting: Boolean,
     errorMessage: String?,
+    connectError: String?,
     onRefresh: () -> Unit,
+    onConnect: () -> Unit,
     modifier: Modifier
 ) {
     LazyColumn(
@@ -351,24 +407,45 @@ private fun AccountScreen(
         verticalArrangement = Arrangement.spacedBy(17.dp)
     ) {
         item { ScreenTitle("Konto", "Verbindung und Daten") }
-        item { DataSourceBanner(data.dataSource == "banking_sandbox") }
-        item { BalanceCard(data) }
-        item {
-            PanelCard {
-                InfoRow("Konto", data.accountName)
-                InfoRow("Institut", data.accountInstitution)
-                InfoRow("Währung", data.currency)
-                InfoRow("Umsätze", "${data.transactions.size}")
-                InfoRow("Eigene Zuordnungen", "$correctedCount")
-                InfoRow("Zeitraum", if (months.isEmpty()) "Keine Daten" else
-                    "${months.last().label} – ${months.first().label}")
+        item { DataSourceBanner(data.dataSource) }
+        if (bankingStatus?.environment != "PRODUCTION" || data.dataSource == "banking_production") {
+            item { BalanceCard(data) }
+            item {
+                PanelCard {
+                    InfoRow("Konto", data.accountName)
+                    InfoRow("Institut", data.accountInstitution)
+                    InfoRow("Währung", data.currency)
+                    InfoRow("Umsätze", "${data.transactions.size}")
+                    InfoRow("Eigene Zuordnungen", "$correctedCount")
+                    InfoRow("Zeitraum", if (months.isEmpty()) "Keine Daten" else
+                        "${months.last().label} – ${months.first().label}")
+                }
             }
         }
         item {
             ActionButton(if (isLoading) "Wird aktualisiert …" else "Daten aktualisieren", onRefresh, !isLoading)
         }
+        if (bankingStatus?.environment == "PRODUCTION") {
+            item {
+                ActionButton(
+                    if (isConnecting) "Verbindung wird gestartet …" else
+                        if (bankingStatus.accountCount > 0) "Bank Austria erneut verbinden" else "Bank Austria verbinden",
+                    onConnect,
+                    !isConnecting && bankingStatus.isConfigured && bankingStatus.isActive
+                )
+            }
+            if (!bankingStatus.isConfigured) item {
+                EmptyNote("Die Production-Anwendung muss zuerst lokal eingerichtet werden.")
+            }
+            else if (!bankingStatus.isActive) item {
+                EmptyNote("Verknüpfe dein Konto zuerst bei Enable Banking mit der Production-Anwendung.")
+            }
+        }
         if (errorMessage != null) item { EmptyNote(errorMessage) }
-        item { EmptyNote("Die verbundenen Testdaten stammen aus einer Sandbox und sind keine echten Bankumsätze.") }
+        if (connectError != null) item { EmptyNote(connectError) }
+        if (data.dataSource == "banking_sandbox") item {
+            EmptyNote("Die verbundenen Testdaten stammen aus einer Sandbox und sind keine echten Bankumsätze.")
+        }
     }
 }
 
@@ -382,7 +459,7 @@ private fun ScreenTitle(title: String, subtitle: String) {
 }
 
 @Composable
-private fun DataSourceBanner(isSandbox: Boolean) {
+private fun DataSourceBanner(dataSource: String) {
     Row(
         modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp))
             .background(PanelRaised).padding(horizontal = 15.dp, vertical = 12.dp),
@@ -390,7 +467,11 @@ private fun DataSourceBanner(isSandbox: Boolean) {
     ) {
         Box(Modifier.size(8.dp).clip(CircleShape).background(Purple))
         Spacer(Modifier.width(10.dp))
-        Text(if (isSandbox) "Verbundenes Testkonto · Sandbox" else "Beispieldaten", color = Purple, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        Text(when (dataSource) {
+            "banking_sandbox" -> "Verbundenes Testkonto · Sandbox"
+            "banking_production" -> "Verbundenes Bankkonto · Bank Austria"
+            else -> "Beispieldaten"
+        }, color = Purple, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
     }
 }
 

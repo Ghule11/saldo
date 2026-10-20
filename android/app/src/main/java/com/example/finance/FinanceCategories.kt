@@ -17,9 +17,9 @@ enum class TransactionCategory(val label: String) {
 }
 
 object FinanceCategories {
-    fun suggest(transaction: FinanceTransaction): TransactionCategory {
+    fun suggest(transaction: FinanceTransaction, isSandbox: Boolean): TransactionCategory {
         val text = "${transaction.merchant} ${transaction.detail}".lowercase(Locale.ROOT)
-        if (listOf("opsparing", "savings", "sparkonto", "eigenübertrag", "eigenes konto")
+        if (isSandbox && listOf("opsparing", "savings", "sparkonto", "eigenübertrag", "eigenes konto")
                 .any { it in text }) return TransactionCategory.Transfer
         if (transaction.amountCents > 0) return TransactionCategory.Income
 
@@ -44,7 +44,8 @@ object FinanceCategories {
 
     fun apply(overview: FinanceOverview, overrides: Map<String, TransactionCategory>): FinanceOverview =
         overview.copy(transactions = overview.transactions.map { transaction ->
-            transaction.copy(category = (overrides[transaction.identity] ?: suggest(transaction)).label)
+            transaction.copy(category = (overrides[transaction.identity]
+                ?: suggest(transaction, overview.dataSource == "banking_sandbox")).label)
         })
 
     fun choices(transaction: FinanceTransaction): List<TransactionCategory> =

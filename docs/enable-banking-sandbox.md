@@ -1,6 +1,6 @@
 # Enable Banking sandbox
 
-Saldo's backend can start the Enable Banking account information flow for a **SANDBOX** application. It refuses the flow if Enable Banking reports that the configured application is not in the sandbox environment. This is a local emulator setup; the callback URL is not suitable for a public deployment or a physical phone.
+Saldo's backend can start the Enable Banking account information flow for a **SANDBOX** application when `EnableBanking:Mode` is unset or set to `SANDBOX`. It refuses the flow if Enable Banking reports that the configured application belongs to a different environment. A separate Production setup is documented in [`enable-banking-production.md`](enable-banking-production.md). This is a local emulator setup; the callback URL is not suitable for a public deployment or a physical phone.
 
 ## Register a sandbox application
 

@@ -41,6 +41,14 @@ data class FinanceTransaction(
     val identity: String = ""
 )
 
+data class BankingConnectionStatus(
+    val environment: String,
+    val isConfigured: Boolean,
+    val isActive: Boolean,
+    val accountCount: Int,
+    val institutionName: String?
+)
+
 object FinanceApi {
     private const val TIMEOUT_MILLIS = 60_000
 
@@ -48,28 +56,52 @@ object FinanceApi {
         return getJson("/api/overview").toFinanceOverview()
     }
 
-    fun fetchDashboardOverview(): FinanceOverview {
+    fun fetchBankingStatus(): BankingConnectionStatus {
         val status = getJson("/api/banking/status")
-        if (status.optBoolean("isSandbox") && status.optInt("accountCount") > 0) {
-            return getJson("/api/banking/data?allTransactions=true").toBankingOverview()
-        }
+        return BankingConnectionStatus(
+            environment = status.optString("environment", "SANDBOX"),
+            isConfigured = status.optBoolean("isConfigured"),
+            isActive = status.optBoolean("isActive"),
+            accountCount = status.optInt("accountCount"),
+            institutionName = status.optString("institutionName").cleanValue()
+        )
+    }
 
+    fun fetchDashboardOverview(status: BankingConnectionStatus): FinanceOverview {
+        if (status.accountCount > 0) {
+            return getJson("/api/banking/data?allTransactions=true")
+                .toBankingOverview(status.environment == "SANDBOX")
+        }
         return fetchOverview()
     }
 
-    private fun getJson(path: String): JSONObject {
+    fun startBankAustriaAuthorization(): String {
+        val url = requestJson("/api/banking/authorization/bank-austria", "POST").getString("url")
+        val parsed = URL(url)
+        if (parsed.protocol != "https" || parsed.host != "auth.enablebanking.com") {
+            throw IOException("Enable Banking hat einen unerwarteten Freigabe-Link zurückgegeben.")
+        }
+        return url
+    }
+
+    private fun getJson(path: String): JSONObject = requestJson(path, "GET")
+
+    private fun requestJson(path: String, method: String): JSONObject {
         val connection = URL("${BuildConfig.FINANCE_API_BASE_URL}$path")
             .openConnection() as HttpURLConnection
 
         try {
-            connection.requestMethod = "GET"
+            connection.requestMethod = method
             connection.connectTimeout = TIMEOUT_MILLIS
             connection.readTimeout = TIMEOUT_MILLIS
             connection.setRequestProperty("Accept", "application/json")
 
             val status = connection.responseCode
             if (status !in 200..299) {
-                throw IOException("Die Finanzdaten konnten nicht geladen werden (HTTP $status).")
+                val detail = connection.errorStream?.bufferedReader()?.use { it.readText() }
+                    ?.let { runCatching { JSONObject(it).optString("detail") }.getOrNull() }
+                    ?.takeIf { it.isNotBlank() }
+                throw IOException(detail ?: "Enable Banking antwortet mit HTTP $status.")
             }
 
             val body = connection.inputStream.bufferedReader().use { it.readText() }
@@ -119,7 +151,7 @@ object FinanceApi {
         )
     }
 
-    private fun JSONObject.toBankingOverview(): FinanceOverview {
+    private fun JSONObject.toBankingOverview(isSandbox: Boolean): FinanceOverview {
         val accounts = optJSONArray("accounts")
             ?: throw IOException("Enable Banking hat keine Kontodaten zurückgegeben.")
         val account = (0 until accounts.length())
@@ -167,7 +199,7 @@ object FinanceApi {
                     category = if (direction == "CRDT") "Eingang" else "Ausgang",
                     bookingDate = item.optString("booking_date").cleanValue(),
                     identity = fingerprint(
-                        "banking_sandbox",
+                        if (isSandbox) "banking_sandbox" else "banking_production",
                         optString("institutionName"),
                         item.optString("entry_reference"),
                         item.optString("booking_date"),
@@ -185,14 +217,15 @@ object FinanceApi {
         val currency = balanceAmount?.optString("currency")
             ?.cleanValue()
             ?: transactionItems?.optJSONObject(0)?.optJSONObject("transaction_amount")?.optString("currency")?.cleanValue()
-            ?: "DKK"
+            ?: if (isSandbox) "DKK" else "EUR"
         val amountCents = balanceAmount?.optString("amount")?.toMinorUnits() ?: 0L
         val continuationKey = transactionsResponse?.optString("continuation_key")
         return FinanceOverview(
-            dataSource = "banking_sandbox",
-            month = "Sandbox-Testdaten",
-            accountInstitution = optString("institutionName").cleanValue().orEmpty().ifBlank { "Mock ASPSP" },
-            accountName = "Sandbox-Konto",
+            dataSource = if (isSandbox) "banking_sandbox" else "banking_production",
+            month = if (isSandbox) "Sandbox-Testdaten" else "Bankdaten",
+            accountInstitution = optString("institutionName").cleanValue().orEmpty()
+                .ifBlank { if (isSandbox) "Mock ASPSP" else "Bank Austria" },
+            accountName = if (isSandbox) "Sandbox-Konto" else "Mein Konto",
             currency = currency,
             balanceCents = amountCents,
             incomeCents = 0,

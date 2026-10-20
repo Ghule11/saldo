@@ -1,0 +1,39 @@
+# Persönliches Bank-Austria-Konto verbinden
+
+Saldo nutzt für echte Kontodaten eine **eigene Enable-Banking-Anwendung in der Production-Umgebung**. Die vorhandene Sandbox-Anwendung und ihr Testkonto bleiben getrennt. Der Zugriff in Saldo ist nur für Kontoinformationen vorgesehen; Saldo initiiert keine Zahlungen.
+
+## 1. Production-Anwendung registrieren
+
+Im [Enable-Banking-Control-Panel](https://enablebanking.com/cp/applications) eine **neue** Anwendung anlegen:
+
+- Environment: **Production**
+- Name: **Saldo**
+- Service: **Account Information**
+- Redirect URL: `http://10.0.2.2:5006/api/banking/callback`
+- RSA-Schlüssel im Browser generieren und die heruntergeladene `.pem`-Datei außerhalb dieses Repositories aufbewahren.
+
+In Production verlangt das Formular außerdem Beschreibung, Datenschutz-E-Mail sowie URLs für Datenschutz und Nutzungsbedingungen. Entwürfe passend zum aktuellen privaten Projekt liegen unter [`privacy.md`](privacy.md) und [`terms.md`](terms.md). Für die URL-Felder müssen diese Seiten unter einer erreichbaren Webadresse veröffentlicht sein. Nur wahrheitsgemäße, für den vorgesehenen Gebrauch passende Angaben eintragen. Die Production-Anwendung erhält eine **neue ID und einen neuen Schlüssel**; die Sandbox-ID funktioniert hier nicht.
+
+Danach bei dieser neuen Anwendung **„Activate by linking accounts“** wählen, **Bank Austria** und das eigene Konto auswählen und die Verknüpfung bei der Bank bestätigen. Diese Verknüpfung schaltet die Anwendung im eingeschränkten Modus für genau dieses Konto frei. Sie autorisiert noch **nicht** den Datenabruf durch Saldo.
+
+## 2. Lokales Backend umstellen
+
+Die ID der Production-Anwendung und den Pfad zu ihrem neuen privaten Schlüssel ausschließlich in lokalen .NET User Secrets speichern:
+
+```powershell
+dotnet user-secrets set "EnableBanking:Production:ApplicationId" "<production-application-id>" --project backend/Finance.Api/Finance.Api.csproj
+dotnet user-secrets set "EnableBanking:Production:PrivateKeyPath" "C:\Users\<user>\Downloads\<production-application-id>.pem" --project backend/Finance.Api/Finance.Api.csproj
+dotnet user-secrets set "EnableBanking:Mode" "PRODUCTION" --project backend/Finance.Api/Finance.Api.csproj
+```
+
+Das Backend neu starten. `GET http://localhost:5006/api/banking/status` soll danach `environment: "PRODUCTION"`, `isConfigured: true` und `isActive: true` melden. Die Sandbox-Zugangsdaten und ihre verschlüsselte Sitzung bleiben separat erhalten. Zurück zur Sandbox geht es mit `EnableBanking:Mode` = `SANDBOX` und anschließendem Backend-Neustart.
+
+## 3. In Saldo freigeben
+
+Im Android-Emulator in Saldo **Konto → Bank Austria verbinden** antippen. Der Browser öffnet den Enable-Banking-/Bank-Austria-Freigabeprozess. Die Bestätigung bei Bank Austria kann die MobileBanking-App auf dem eigenen Telefon erfordern. Nach dem Rücksprung zur lokalen Callback-Seite zu Saldo zurückkehren; die App aktualisiert die Daten. Bei leerer Kontoliste prüfen, ob im Control Panel **genau dasselbe Konto** verknüpft wurde.
+
+`10.0.2.2` ist die Adresse des Host-Computers aus Sicht des Android-Emulators. Der lokale Callback funktioniert daher nur, während das Backend auf dem Computer läuft und der Freigabeprozess im Emulator-Browser stattfindet. Eine spätere Installation auf einem echten Telefon braucht eine andere Callback-/Backend-Lösung.
+
+Saldo speichert den Sitzungsverweis verschlüsselt unter `%LOCALAPPDATA%\Saldo` und lädt Kontostand und Umsätze über das lokale Backend. Die privaten Schlüssel, Bankzugangsdaten und Kontodaten gehören nicht in GitHub. Wenn eine Bankfreigabe ausläuft, in Saldo erneut verbinden.
+
+Quellen: [Enable Banking: eigene Konten verknüpfen](https://enablebanking.com/docs/api/linked-accounts), [Control Panel](https://enablebanking.com/docs/api/control-panel/), [Banken in Österreich](https://enablebanking.com/docs/markets/at).
