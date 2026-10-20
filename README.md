@@ -17,7 +17,7 @@ The backend exposes `GET /api/health` and `GET /api/overview`. The Android app f
 
 The planned provider is Enable Banking. Real bank access has not been implemented. Keep provider private keys, banking credentials, account data, and signing keys out of the Android app and Git; common key and certificate files are ignored locally.
 
-The backend includes a sandbox-only Enable Banking authorization flow. It does not yet replace the sample dashboard with provider balances or transactions. See [`docs/enable-banking-sandbox.md`](docs/enable-banking-sandbox.md) for local sandbox setup.
+The backend includes a sandbox-only Enable Banking authorization flow. When a sandbox account is connected, the Android dashboard displays its provider balance and the currently returned transaction page; otherwise it shows sample data. The connected Mock ASPSP data is synthetic. See [`docs/enable-banking-sandbox.md`](docs/enable-banking-sandbox.md) for local sandbox setup.
 
 ## Run locally
 

@@ -49,7 +49,7 @@ The response must report `isConfigured: true` and `isSandbox: true` before conti
 
 The backend validates the one-use `state` and exchanges the authorization code for a sandbox session. The connected session reference is stored in an encrypted local file under `%LOCALAPPDATA%\Saldo` using ASP.NET Core Data Protection. On Windows, the protection keys are stored outside the repository and protected with DPAPI, so restarting the local backend does not require repeating authorization.
 
-The dashboard continues to show sample data. The separate account-data endpoint fetches sandbox balances and transactions but does not yet replace the dashboard overview.
+On launch, the Android app checks the backend's sandbox connection status. If an account is connected, the dashboard shows its sandbox balance and the transactions returned by Enable Banking; otherwise it uses the existing sample overview. The current transaction response may include a continuation key, and the app indicates when more sandbox transactions are available. It does not load later pages yet. Mock ASPSP data is synthetic and is not data from Bank Austria or a real bank account.
 
 ## Backend routes
 

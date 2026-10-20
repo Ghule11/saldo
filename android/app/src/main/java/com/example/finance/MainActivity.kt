@@ -103,9 +103,9 @@ private fun FinanceApp() {
         isLoading = true
         errorMessage = null
         try {
-            overview = withContext(Dispatchers.IO) { FinanceApi.fetchOverview() }
+            overview = withContext(Dispatchers.IO) { FinanceApi.fetchDashboardOverview() }
         } catch (_: Exception) {
-            errorMessage = "Das lokale Backend ist gerade nicht erreichbar. Starte es am Computer und versuche es erneut."
+            errorMessage = "Die Finanzdaten konnten nicht geladen werden. Prüfe, ob das Backend läuft und das Testkonto verbunden ist."
         } finally {
             isLoading = false
         }
@@ -173,6 +173,7 @@ private fun ConnectionErrorScreen(message: String, onRetry: () -> Unit) {
 
 @Composable
 private fun OverviewScreen(overview: FinanceOverview, modifier: Modifier = Modifier) {
+    val isSandboxData = overview.dataSource == "banking_sandbox"
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(start = 20.dp, top = 18.dp, end = 20.dp, bottom = 24.dp),
@@ -200,15 +201,22 @@ private fun OverviewScreen(overview: FinanceOverview, modifier: Modifier = Modif
             }
         }
 
-        item { SampleDataBanner() }
+        item { DataSourceBanner(isSandboxData) }
         item { BalanceCard(overview) }
-        item { MonthSummary(overview) }
-        item { SpendingCard(overview) }
+        if (!isSandboxData) {
+            item { MonthSummary(overview) }
+            item { SpendingCard(overview) }
+        }
         item {
-            SectionHeading("Letzte Umsätze", overview.month)
+            SectionHeading("Letzte Umsätze", if (isSandboxData) "Sandbox" else overview.month)
         }
         items(overview.transactions.take(4)) { transaction ->
             TransactionRow(transaction, overview.currency)
+        }
+        if (isSandboxData && overview.hasMoreTransactions) {
+            item {
+                Text("Weitere Testumsätze sind verfügbar.", color = Muted, fontSize = 12.sp)
+            }
         }
         item {
             Text(
@@ -222,7 +230,7 @@ private fun OverviewScreen(overview: FinanceOverview, modifier: Modifier = Modif
 }
 
 @Composable
-private fun SampleDataBanner() {
+private fun DataSourceBanner(isSandboxData: Boolean) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -234,8 +242,17 @@ private fun SampleDataBanner() {
         Box(Modifier.size(8.dp).clip(CircleShape).background(Green))
         Spacer(Modifier.width(9.dp))
         Column {
-            Text("Testdaten vom Backend", color = Green, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-            Text("Noch nicht mit einer Bank verbunden", color = Muted, fontSize = 11.sp)
+            Text(
+                if (isSandboxData) "Sandbox-Testkonto verbunden" else "Beispieldaten",
+                color = Green,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 13.sp
+            )
+            Text(
+                if (isSandboxData) "Künstliche Kontodaten vom Mock ASPSP" else "Noch kein Testkonto verbunden",
+                color = Muted,
+                fontSize = 11.sp
+            )
         }
     }
 }
@@ -249,8 +266,19 @@ private fun BalanceCard(overview: FinanceOverview) {
     ) {
         Column(Modifier.padding(22.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("GESAMTVERMÖGEN", color = Color(0xFFC3DED1), fontSize = 11.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.sp)
-                Text("DEMO", color = Color(0xFFC3DED1), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                Text(
+                    if (overview.dataSource == "banking_sandbox") "KONTOSTAND" else "GESAMTVERMÖGEN",
+                    color = Color(0xFFC3DED1),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    letterSpacing = 1.sp
+                )
+                Text(
+                    if (overview.dataSource == "banking_sandbox") "SANDBOX" else "DEMO",
+                    color = Color(0xFFC3DED1),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold
+                )
             }
             Spacer(Modifier.height(8.dp))
             Text(formatCurrency(overview.balanceCents, overview.currency), color = Color.White, fontSize = 34.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.5).sp)
@@ -355,9 +383,14 @@ private fun SectionHeading(title: String, action: String) {
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
 private fun TransactionsScreen(overview: FinanceOverview, modifier: Modifier = Modifier) {
+    val isSandboxData = overview.dataSource == "banking_sandbox"
     var selectedCategory by rememberSaveable { mutableStateOf("Alle") }
     val categories = listOf("Alle") + Category.entries.map { it.title }
-    val visibleTransactions = if (selectedCategory == "Alle") overview.transactions else overview.transactions.filter { it.category == selectedCategory }
+    val visibleTransactions = if (isSandboxData || selectedCategory == "Alle") {
+        overview.transactions
+    } else {
+        overview.transactions.filter { it.category == selectedCategory }
+    }
 
     LazyColumn(
         modifier = modifier.fillMaxSize(),
@@ -371,27 +404,43 @@ private fun TransactionsScreen(overview: FinanceOverview, modifier: Modifier = M
                 Text("Alle Umsätze im Überblick", color = Muted, fontSize = 14.sp)
             }
         }
-        item { SampleDataBanner() }
-        item {
-            Row(
-                modifier = Modifier.horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                categories.forEach { category ->
-                    FilterChip(
-                        selected = selectedCategory == category,
-                        onClick = { selectedCategory = category },
-                        label = { Text(category, maxLines = 1) }
-                    )
+        item { DataSourceBanner(isSandboxData) }
+        if (!isSandboxData) {
+            item {
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    categories.forEach { category ->
+                        FilterChip(
+                            selected = selectedCategory == category,
+                            onClick = { selectedCategory = category },
+                            label = { Text(category, maxLines = 1) }
+                        )
+                    }
                 }
             }
         }
-        item { SectionHeading(overview.month, "${visibleTransactions.size} Umsätze") }
+        item {
+            SectionHeading(
+                if (isSandboxData) "Testumsätze" else overview.month,
+                "${visibleTransactions.size} geladen"
+            )
+        }
         items(visibleTransactions) { transaction ->
             TransactionRow(transaction, overview.currency)
         }
+        if (isSandboxData && overview.hasMoreTransactions) {
+            item { Text("Weitere Testumsätze sind verfügbar.", color = Muted, fontSize = 12.sp) }
+        }
         if (visibleTransactions.isEmpty()) {
-            item { Text("Keine Umsätze in dieser Kategorie.", color = Muted, modifier = Modifier.padding(vertical = 18.dp)) }
+            item {
+                Text(
+                    if (isSandboxData) "Für dieses Testkonto wurden keine Umsätze geliefert." else "Keine Umsätze in dieser Kategorie.",
+                    color = Muted,
+                    modifier = Modifier.padding(vertical = 18.dp)
+                )
+            }
         }
     }
 }
@@ -399,6 +448,16 @@ private fun TransactionsScreen(overview: FinanceOverview, modifier: Modifier = M
 @Composable
 private fun TransactionRow(transaction: FinanceTransaction, currency: String) {
     val category = Category.entries.firstOrNull { it.title == transaction.category } ?: Category.Other
+    val iconColor = when (transaction.category) {
+        "Eingang" -> Green
+        "Ausgang" -> Muted
+        else -> category.color
+    }
+    val iconMark = when (transaction.category) {
+        "Eingang" -> "+"
+        "Ausgang" -> "−"
+        else -> category.mark
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -408,10 +467,10 @@ private fun TransactionRow(transaction: FinanceTransaction, currency: String) {
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
-            modifier = Modifier.size(42.dp).clip(CircleShape).background(category.color.copy(alpha = 0.13f)),
+            modifier = Modifier.size(42.dp).clip(CircleShape).background(iconColor.copy(alpha = 0.13f)),
             contentAlignment = Alignment.Center
         ) {
-            Text(category.mark, color = category.color, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            Text(iconMark, color = iconColor, fontWeight = FontWeight.Bold, fontSize = 16.sp)
         }
         Spacer(Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f)) {
