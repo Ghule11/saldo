@@ -25,5 +25,5 @@ The app and backend are prepared for Bank Austria account authorization through 
 
 ## Run locally
 
-- Start the backend project in `backend/Finance.Api/` with its `http` launch profile (port `5006`).
+- Start the backend project in `backend/Finance.Api/` with its `https` launch profile (ports `7129` for the desktop callback and `5006` for the emulator API). A locally trusted development certificate for `localhost` is required.
 - Start the Android emulator, then run the `android/` app from Android Studio. The emulator reaches the computer's local API through `10.0.2.2`.

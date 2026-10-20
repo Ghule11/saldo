@@ -30,7 +30,7 @@ public sealed class EnableBankingService(
         : configuration["EnableBanking:PrivateKeyPath"];
     private readonly string _redirectUrl = configuration["EnableBanking:Mode"]?.ToUpperInvariant() == "PRODUCTION"
         ? configuration["EnableBanking:Production:RedirectUrl"]
-            ?? "http://10.0.2.2:5006/api/banking/callback"
+            ?? "https://localhost:7129/api/banking/callback"
         : configuration["EnableBanking:RedirectUrl"]
         ?? "http://10.0.2.2:5006/api/banking/callback";
 

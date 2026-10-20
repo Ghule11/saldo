@@ -1,6 +1,8 @@
 using Finance.Api.Data;
 using Finance.Api.Services;
 using Microsoft.AspNetCore.DataProtection;
+using System.ComponentModel;
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text.Encodings.Web;
 
@@ -31,8 +33,6 @@ if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
 }
-
-app.UseHttpsRedirection();
 
 app.MapGet("/api/health", () => Results.Ok(new
 {
@@ -167,7 +167,30 @@ app.MapPost("/api/banking/authorization/bank-austria", async (
 {
     try
     {
-        return Results.Ok(await banking.StartBankAustriaAuthorizationAsync(cancellationToken));
+        if (!OperatingSystem.IsWindows())
+        {
+            return Results.Problem("Der lokale Desktop-Browser kann nur unter Windows gestartet werden.", statusCode: 503);
+        }
+
+        var authorization = await banking.StartBankAustriaAuthorizationAsync(cancellationToken);
+        if (!Uri.TryCreate(authorization.Url, UriKind.Absolute, out var authUri) ||
+            authUri.Scheme != Uri.UriSchemeHttps || authUri.Host != "auth.enablebanking.com")
+        {
+            banking.CancelAuthorization(authorization.State);
+            return Results.Problem("Enable Banking hat einen unerwarteten Freigabe-Link zurückgegeben.", statusCode: 502);
+        }
+
+        try
+        {
+            Process.Start(new ProcessStartInfo(authUri.AbsoluteUri) { UseShellExecute = true });
+        }
+        catch (Exception exception) when (exception is Win32Exception or InvalidOperationException)
+        {
+            banking.CancelAuthorization(authorization.State);
+            return Results.Problem("Der Browser auf dem Computer konnte nicht geöffnet werden.", statusCode: 503);
+        }
+
+        return Results.Ok(new { message = "Die Bankfreigabe wurde im Browser auf dem Computer geöffnet." });
     }
     catch (EnableBankingApiException exception)
     {
@@ -220,7 +243,7 @@ app.MapGet("/api/banking/callback", async (
         var result = await banking.CompleteAuthorizationAsync(code, state, cancellationToken);
         return CallbackPage(
             "Konto verbunden",
-            $"{result.InstitutionName} wurde autorisiert. Zurück zu Saldo wechseln und Daten aktualisieren. Gefundene Konten: {result.AccountCount}.",
+            $"{result.InstitutionName} wurde autorisiert. In Saldo im Android-Emulator die Daten aktualisieren. Gefundene Konten: {result.AccountCount}.",
             StatusCodes.Status200OK);
     }
     catch (EnableBankingApiException exception)

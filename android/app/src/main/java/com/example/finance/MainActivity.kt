@@ -1,7 +1,5 @@
 package com.example.finance
 
-import android.content.Intent
-import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -48,7 +46,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -69,8 +66,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
 import com.example.finance.ui.theme.FinanceTheme
 import java.text.NumberFormat
 import java.util.Currency
@@ -116,24 +111,12 @@ private fun FinanceApp() {
     var bankingStatus by remember { mutableStateOf<BankingConnectionStatus?>(null) }
     var isConnecting by remember { mutableStateOf(false) }
     var connectError by remember { mutableStateOf<String?>(null) }
-    var authorizationStarted by remember { mutableStateOf(false) }
+    var connectNotice by remember { mutableStateOf<String?>(null) }
     val context = LocalContext.current
-    val lifecycleOwner = context as ComponentActivity
     val scope = rememberCoroutineScope()
     val categoryStore = remember(context) { CategoryOverrideStore(context.applicationContext) }
     var categoryOverrides by remember { mutableStateOf(categoryStore.load()) }
     var editingTransaction by remember { mutableStateOf<FinanceTransaction?>(null) }
-
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME && authorizationStarted) {
-                authorizationStarted = false
-                reloadKey++
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
 
     LaunchedEffect(reloadKey) {
         isLoading = true
@@ -192,18 +175,17 @@ private fun FinanceApp() {
             AppTab.Analysis -> AnalysisScreen(categorized, months, modifier)
             AppTab.Account -> AccountScreen(
                 categorized, months, categoryOverrides.size, bankingStatus, isLoading,
-                isConnecting, errorMessage, connectError, { reloadKey++ },
+                isConnecting, errorMessage, connectError, connectNotice, { reloadKey++ },
                 {
                     if (!isConnecting) {
                         isConnecting = true
                         connectError = null
+                        connectNotice = null
                         scope.launch {
                             try {
-                                val url = withContext(Dispatchers.IO) { FinanceApi.startBankAustriaAuthorization() }
-                                authorizationStarted = true
-                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                                withContext(Dispatchers.IO) { FinanceApi.startBankAustriaAuthorization() }
+                                connectNotice = "Freigabe im Browser auf deinem Computer abschließen. Danach hier Daten aktualisieren."
                             } catch (exception: Exception) {
-                                authorizationStarted = false
                                 connectError = exception.message ?: "Die Verbindung konnte nicht gestartet werden."
                             } finally {
                                 isConnecting = false
@@ -397,6 +379,7 @@ private fun AccountScreen(
     isConnecting: Boolean,
     errorMessage: String?,
     connectError: String?,
+    connectNotice: String?,
     onRefresh: () -> Unit,
     onConnect: () -> Unit,
     modifier: Modifier
@@ -443,6 +426,7 @@ private fun AccountScreen(
         }
         if (errorMessage != null) item { EmptyNote(errorMessage) }
         if (connectError != null) item { EmptyNote(connectError) }
+        if (connectNotice != null) item { EmptyNote(connectNotice) }
         if (data.dataSource == "banking_sandbox") item {
             EmptyNote("Die verbundenen Testdaten stammen aus einer Sandbox und sind keine echten Bankumsätze.")
         }

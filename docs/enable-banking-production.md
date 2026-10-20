@@ -9,7 +9,7 @@ Im [Enable-Banking-Control-Panel](https://enablebanking.com/cp/applications) ein
 - Environment: **Production**
 - Name: **Saldo**
 - Service: **Account Information**
-- Redirect URL: `http://10.0.2.2:5006/api/banking/callback`
+- Redirect URL: `https://localhost:7129/api/banking/callback`
 - RSA-Schlüssel im Browser generieren und die heruntergeladene `.pem`-Datei außerhalb dieses Repositories aufbewahren.
 
 In Production verlangt das Formular außerdem Beschreibung, Datenschutz-E-Mail sowie URLs für Datenschutz und Nutzungsbedingungen. Entwürfe passend zum aktuellen privaten Projekt liegen unter [`privacy.md`](privacy.md) und [`terms.md`](terms.md). Für die URL-Felder müssen diese Seiten unter einer erreichbaren Webadresse veröffentlicht sein. Nur wahrheitsgemäße, für den vorgesehenen Gebrauch passende Angaben eintragen. Die Production-Anwendung erhält eine **neue ID und einen neuen Schlüssel**; die Sandbox-ID funktioniert hier nicht.
@@ -26,13 +26,13 @@ dotnet user-secrets set "EnableBanking:Production:PrivateKeyPath" "C:\Users\<use
 dotnet user-secrets set "EnableBanking:Mode" "PRODUCTION" --project backend/Finance.Api/Finance.Api.csproj
 ```
 
-Das Backend neu starten. `GET http://localhost:5006/api/banking/status` soll danach `environment: "PRODUCTION"`, `isConfigured: true` und `isActive: true` melden. Die Sandbox-Zugangsdaten und ihre verschlüsselte Sitzung bleiben separat erhalten. Zurück zur Sandbox geht es mit `EnableBanking:Mode` = `SANDBOX` und anschließendem Backend-Neustart.
+Das Backend mit dem `https`-Profil starten: Es lauscht dabei auf `https://localhost:7129` für den Rücksprung im PC-Browser und auf `http://localhost:5006` für die App im Emulator. Ein auf dem Computer vertrauenswürdiges HTTPS-Entwicklungszertifikat für `localhost` ist nötig. `GET http://localhost:5006/api/banking/status` soll danach `environment: "PRODUCTION"`, `isConfigured: true` und `isActive: true` melden. Die Sandbox-Zugangsdaten und ihre verschlüsselte Sitzung bleiben separat erhalten. Zurück zur Sandbox geht es mit `EnableBanking:Mode` = `SANDBOX` und anschließendem Backend-Neustart.
 
 ## 3. In Saldo freigeben
 
-Im Android-Emulator in Saldo **Konto → Bank Austria verbinden** antippen. Der Browser öffnet den Enable-Banking-/Bank-Austria-Freigabeprozess. Die Bestätigung bei Bank Austria kann die MobileBanking-App auf dem eigenen Telefon erfordern. Nach dem Rücksprung zur lokalen Callback-Seite zu Saldo zurückkehren; die App aktualisiert die Daten. Bei leerer Kontoliste prüfen, ob im Control Panel **genau dasselbe Konto** verknüpft wurde.
+Im Android-Emulator in Saldo **Konto → Bank Austria verbinden** antippen. Saldo öffnet den Enable-Banking-/Bank-Austria-Freigabeprozess im **Browser auf dem Computer**. Die Bestätigung bei Bank Austria kann die MobileBanking-App auf dem eigenen Telefon erfordern. Nach dem Rücksprung zur lokalen Callback-Seite in Saldo **Daten aktualisieren** antippen. Bei leerer Kontoliste prüfen, ob im Control Panel **genau dasselbe Konto** verknüpft wurde.
 
-`10.0.2.2` ist die Adresse des Host-Computers aus Sicht des Android-Emulators. Der lokale Callback funktioniert daher nur, während das Backend auf dem Computer läuft und der Freigabeprozess im Emulator-Browser stattfindet. Eine spätere Installation auf einem echten Telefon braucht eine andere Callback-/Backend-Lösung.
+`10.0.2.2` ist die Adresse des Host-Computers aus Sicht des Android-Emulators und wird nur für die Verbindung der App zum Backend verwendet. Der Production-Callback nutzt stattdessen `https://localhost:7129` im PC-Browser. Der lokale Ablauf funktioniert nur, solange das Backend auf dem Computer läuft. Eine spätere Installation auf einem echten Telefon braucht eine andere Callback-/Backend-Lösung.
 
 Saldo speichert den Sitzungsverweis verschlüsselt unter `%LOCALAPPDATA%\Saldo` und lädt Kontostand und Umsätze über das lokale Backend. Die privaten Schlüssel, Bankzugangsdaten und Kontodaten gehören nicht in GitHub. Wenn eine Bankfreigabe ausläuft, in Saldo erneut verbinden.
 

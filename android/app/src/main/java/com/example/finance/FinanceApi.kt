@@ -75,13 +75,8 @@ object FinanceApi {
         return fetchOverview()
     }
 
-    fun startBankAustriaAuthorization(): String {
-        val url = requestJson("/api/banking/authorization/bank-austria", "POST").getString("url")
-        val parsed = URL(url)
-        if (parsed.protocol != "https" || parsed.host != "auth.enablebanking.com") {
-            throw IOException("Enable Banking hat einen unerwarteten Freigabe-Link zurückgegeben.")
-        }
-        return url
+    fun startBankAustriaAuthorization() {
+        requestJson("/api/banking/authorization/bank-austria", "POST")
     }
 
     private fun getJson(path: String): JSONObject = requestJson(path, "GET")
