@@ -174,7 +174,9 @@ app.MapPost("/api/banking/authorization/bank-austria", async (
 
         var authorization = await banking.StartBankAustriaAuthorizationAsync(cancellationToken);
         if (!Uri.TryCreate(authorization.Url, UriKind.Absolute, out var authUri) ||
-            authUri.Scheme != Uri.UriSchemeHttps || authUri.Host != "auth.enablebanking.com")
+            authUri.Scheme != Uri.UriSchemeHttps ||
+            string.IsNullOrWhiteSpace(authUri.Host) ||
+            !string.IsNullOrEmpty(authUri.UserInfo))
         {
             banking.CancelAuthorization(authorization.State);
             return Results.Problem("Enable Banking hat einen unerwarteten Freigabe-Link zurückgegeben.", statusCode: 502);
