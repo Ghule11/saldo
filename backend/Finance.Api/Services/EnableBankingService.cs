@@ -239,7 +239,7 @@ public sealed class EnableBankingService(
         if (accountUids.Length == 0)
         {
             throw new InvalidOperationException(
-                "Enable Banking hat kein Konto freigegeben. Verknüpfe genau dieses Konto zuerst mit der Production-Anwendung im Control Panel.");
+                "Die Bankfreigabe war erfolgreich, aber Enable Banking hat Saldo kein nutzbares Konto geliefert. Prüfe im Control Panel, ob genau dieses Konto mit der Production-Anwendung verknüpft ist. Falls es bereits verknüpft ist, prüfe unter Requests die letzte /sessions-Anfrage.");
         }
 
         sessionStore.SetConnectedSession(_mode, new ConnectedBankSession(
