@@ -1,9 +1,23 @@
 using Finance.Api.Data;
 using Finance.Api.Services;
+using Microsoft.AspNetCore.DataProtection;
 using System.Security.Cryptography;
 using System.Text.Encodings.Web;
 
 var builder = WebApplication.CreateBuilder(args);
+
+var dataProtectionKeysPath = Path.Combine(
+    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+    "Saldo",
+    "DataProtectionKeys");
+Directory.CreateDirectory(dataProtectionKeysPath);
+var dataProtection = builder.Services.AddDataProtection()
+    .SetApplicationName("FinanceApp.Saldo")
+    .PersistKeysToFileSystem(new DirectoryInfo(dataProtectionKeysPath));
+if (OperatingSystem.IsWindows())
+{
+    dataProtection.ProtectKeysWithDpapi();
+}
 
 // Add services to the container.
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
@@ -53,6 +67,32 @@ app.MapGet("/api/banking/status", async (EnableBankingService banking, Cancellat
 })
 .WithName("GetBankingStatus")
 .WithSummary("Reports whether the local Enable Banking sandbox is configured and connected.");
+
+app.MapGet("/api/banking/data", async (EnableBankingService banking, CancellationToken cancellationToken) =>
+{
+    try
+    {
+        return Results.Ok(await banking.GetAccountDataAsync(cancellationToken));
+    }
+    catch (EnableBankingApiException exception)
+    {
+        return Results.Problem(exception.Message, statusCode: exception.StatusCode, title: "Enable Banking could not be reached");
+    }
+    catch (InvalidOperationException exception)
+    {
+        return Results.Problem(exception.Message, statusCode: 409, title: "No sandbox account is connected");
+    }
+    catch (CryptographicException)
+    {
+        return Results.Problem("Der konfigurierte private Sandbox-Schlüssel ist ungültig.", statusCode: 500);
+    }
+    catch (IOException)
+    {
+        return Results.Problem("Der konfigurierte private Sandbox-Schlüssel konnte nicht gelesen werden.", statusCode: 500);
+    }
+})
+.WithName("GetBankingData")
+.WithSummary("Fetches balances and transactions for connected sandbox accounts.");
 
 app.MapGet("/api/banking/institutions", async (
     string? country,

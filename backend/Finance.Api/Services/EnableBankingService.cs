@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Microsoft.AspNetCore.DataProtection;
 
 namespace Finance.Api.Services;
 
@@ -66,6 +67,37 @@ public sealed class EnableBankingService(
             .OrderBy(item => item.Country)
             .ThenBy(item => item.Name)
             .ToArray();
+    }
+
+    public async Task<BankingAccountDataResponse> GetAccountDataAsync(CancellationToken cancellationToken)
+    {
+        await EnsureSandboxApplicationAsync(cancellationToken);
+
+        var connected = sessionStore.ConnectedSession
+            ?? throw new InvalidOperationException("Zuerst ein Sandbox-Konto verbinden.");
+
+        var accounts = new List<BankingAccountData>();
+        foreach (var accountUid in connected.AccountUids)
+        {
+            var encodedAccountUid = Uri.EscapeDataString(accountUid);
+            var balances = await SendAsync<JsonElement>(
+                HttpMethod.Get,
+                $"/accounts/{encodedAccountUid}/balances",
+                null,
+                cancellationToken);
+            var transactions = await SendAsync<JsonElement>(
+                HttpMethod.Get,
+                $"/accounts/{encodedAccountUid}/transactions",
+                null,
+                cancellationToken);
+
+            accounts.Add(new BankingAccountData(balances, transactions));
+        }
+
+        return new BankingAccountDataResponse(
+            connected.InstitutionName,
+            connected.InstitutionCountry,
+            accounts);
     }
 
     public async Task<AuthorizationStartResult> StartAuthorizationAsync(
@@ -250,7 +282,21 @@ public sealed class EnableBankingService(
 public sealed class BankingSessionStore
 {
     private readonly ConcurrentDictionary<string, PendingAuthorization> _pending = new(StringComparer.Ordinal);
+    private readonly IDataProtector _protector;
+    private readonly string _sessionFilePath;
     private ConnectedBankSession? _connectedSession;
+
+    public BankingSessionStore(IDataProtectionProvider dataProtectionProvider)
+    {
+        _protector = dataProtectionProvider.CreateProtector("FinanceApp.Saldo.EnableBankingSession.v1");
+
+        var storageDirectory = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "Saldo");
+        Directory.CreateDirectory(storageDirectory);
+        _sessionFilePath = Path.Combine(storageDirectory, "enable-banking-session.bin");
+        _connectedSession = LoadConnectedSession();
+    }
 
     public ConnectedBankSession? ConnectedSession => Volatile.Read(ref _connectedSession);
 
@@ -267,8 +313,34 @@ public sealed class BankingSessionStore
     public bool TryConsumePendingAuthorization(string state, out PendingAuthorization authorization) =>
         _pending.TryRemove(state, out authorization!);
 
-    public void SetConnectedSession(ConnectedBankSession session) =>
+    public void SetConnectedSession(ConnectedBankSession session)
+    {
+        var serialized = JsonSerializer.SerializeToUtf8Bytes(session);
+        var protectedData = _protector.Protect(serialized);
+        var temporaryPath = $"{_sessionFilePath}.tmp";
+        File.WriteAllBytes(temporaryPath, protectedData);
+        File.Move(temporaryPath, _sessionFilePath, overwrite: true);
         Volatile.Write(ref _connectedSession, session);
+    }
+
+    private ConnectedBankSession? LoadConnectedSession()
+    {
+        if (!File.Exists(_sessionFilePath))
+        {
+            return null;
+        }
+
+        try
+        {
+            var protectedData = File.ReadAllBytes(_sessionFilePath);
+            var serialized = _protector.Unprotect(protectedData);
+            return JsonSerializer.Deserialize<ConnectedBankSession>(serialized);
+        }
+        catch (Exception exception) when (exception is CryptographicException or JsonException or IOException)
+        {
+            return null;
+        }
+    }
 }
 
 public sealed record StartBankAuthorizationRequest(string InstitutionName, string Country);
@@ -279,6 +351,11 @@ public sealed record BankingStatus(
     string? InstitutionName,
     string? InstitutionCountry,
     int AccountCount);
+public sealed record BankingAccountDataResponse(
+    string InstitutionName,
+    string InstitutionCountry,
+    IReadOnlyList<BankingAccountData> Accounts);
+public sealed record BankingAccountData(JsonElement Balances, JsonElement Transactions);
 public sealed record AuthorizationStartResult(string Url, string State, string RedirectUrl);
 public sealed record AuthorizationCompletionResult(string InstitutionName, string InstitutionCountry, int AccountCount);
 public sealed record PendingAuthorization(

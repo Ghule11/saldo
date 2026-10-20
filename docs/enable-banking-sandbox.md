@@ -47,11 +47,14 @@ The response must report `isConfigured: true` and `isSandbox: true` before conti
 
 3. Open the returned `url` in the Android emulator browser and complete the provider's sandbox flow. The provider redirects to Saldo's local callback; return to the app afterward.
 
-The backend validates the one-use `state`, exchanges the authorization code for a sandbox session, and keeps the session reference in memory. Restarting the backend clears it. The dashboard continues to show sample data until the separate account-data step fetches sandbox balances and transactions.
+The backend validates the one-use `state` and exchanges the authorization code for a sandbox session. The connected session reference is stored in an encrypted local file under `%LOCALAPPDATA%\Saldo` using ASP.NET Core Data Protection. On Windows, the protection keys are stored outside the repository and protected with DPAPI, so restarting the local backend does not require repeating authorization.
+
+The dashboard continues to show sample data. The separate account-data endpoint fetches sandbox balances and transactions but does not yet replace the dashboard overview.
 
 ## Backend routes
 
 - `GET /api/banking/status` — local configuration, verified app environment, and sandbox connection status
+- `GET /api/banking/data` — read-only balances and transactions for each connected sandbox account
 - `GET /api/banking/institutions?country=AT` — sandbox institutions; omit `country` to list all returned institutions
 - `POST /api/banking/authorization` — start authorization for one listed institution
 - `GET /api/banking/callback` — provider redirect; accepts a one-use state for ten minutes
