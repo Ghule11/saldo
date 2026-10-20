@@ -24,17 +24,20 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.runtime.setValue
@@ -43,20 +46,23 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.finance.ui.theme.FinanceTheme
+import java.util.Currency
 import java.text.NumberFormat
 import java.util.Locale
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 private val Ink = Color(0xFF18231F)
 private val Muted = Color(0xFF75817B)
 private val Canvas = Color(0xFFF5F7F4)
 private val Green = Color(0xFF187653)
 private val PaleGreen = Color(0xFFE7F2EC)
-private val Line = Color(0xFFE8EDE9)
 
 private enum class AppTab(val title: String, val mark: String) {
     Overview("Übersicht", "⌂"),
@@ -69,30 +75,9 @@ private enum class Category(val title: String, val color: Color, val mark: Strin
     Transport("Transport", Color(0xFF6585C5), "T"),
     Shopping("Shopping", Color(0xFFAD72AA), "S"),
     Home("Wohnen", Color(0xFF4D9A9A), "W"),
-    Leisure("Freizeit", Color(0xFFDC7F65), "F")
+    Leisure("Freizeit", Color(0xFFDC7F65), "F"),
+    Other("Sonstiges", Color(0xFF829087), "?")
 }
-
-private data class Transaction(
-    val merchant: String,
-    val detail: String,
-    val date: String,
-    val amountCents: Long,
-    val category: Category
-)
-
-private val demoTransactions = listOf(
-    Transaction("BILLA", "Lebensmittel · Karte", "Heute · 12:42", -4287, Category.Food),
-    Transaction("Wiener Linien", "Jahreskarte · Karte", "Heute · 08:10", -5100, Category.Transport),
-    Transaction("Gehalt", "Eingang · Überweisung", "Gestern", 240000, Category.Income),
-    Transaction("Spotify", "Monatsabo · Lastschrift", "17. Okt.", -1099, Category.Leisure),
-    Transaction("Miete", "Wohnung · Dauerauftrag", "15. Okt.", -92000, Category.Home),
-    Transaction("dm drogerie", "Drogerie · Karte", "14. Okt.", -2376, Category.Shopping),
-    Transaction("Hofer", "Lebensmittel · Karte", "13. Okt.", -3154, Category.Food),
-    Transaction("Café Kaffee", "Essen & Trinken · Karte", "12. Okt.", -895, Category.Leisure),
-    Transaction("ÖBB", "Zugticket · Karte", "10. Okt.", -11700, Category.Transport),
-    Transaction("Buchhandlung", "Bücher · Karte", "9. Okt.", -1534, Category.Shopping),
-    Transaction("Restaurant", "Essen gehen · Karte", "8. Okt.", -2528, Category.Leisure)
-)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -109,6 +94,28 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun FinanceApp() {
     var selectedTab by rememberSaveable { mutableStateOf(AppTab.Overview) }
+    var overview by remember { mutableStateOf<FinanceOverview?>(null) }
+    var isLoading by remember { mutableStateOf(true) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+    var reloadKey by remember { mutableStateOf(0) }
+
+    LaunchedEffect(reloadKey) {
+        isLoading = true
+        errorMessage = null
+        try {
+            overview = withContext(Dispatchers.IO) { FinanceApi.fetchOverview() }
+        } catch (_: Exception) {
+            errorMessage = "Das lokale Backend ist gerade nicht erreichbar. Starte es am Computer und versuche es erneut."
+        } finally {
+            isLoading = false
+        }
+    }
+
+    if (overview == null) {
+        if (isLoading) LoadingScreen() else ConnectionErrorScreen(errorMessage.orEmpty()) { reloadKey += 1 }
+        return
+    }
+    val financeOverview = overview ?: return
 
     Scaffold(
         containerColor = Canvas,
@@ -126,14 +133,46 @@ private fun FinanceApp() {
         }
     ) { innerPadding ->
         when (selectedTab) {
-            AppTab.Overview -> OverviewScreen(Modifier.padding(innerPadding))
-            AppTab.Transactions -> TransactionsScreen(Modifier.padding(innerPadding))
+            AppTab.Overview -> OverviewScreen(financeOverview, Modifier.padding(innerPadding))
+            AppTab.Transactions -> TransactionsScreen(financeOverview, Modifier.padding(innerPadding))
         }
     }
 }
 
 @Composable
-private fun OverviewScreen(modifier: Modifier = Modifier) {
+private fun LoadingScreen() {
+    Surface(modifier = Modifier.fillMaxSize(), color = Canvas) {
+        Column(
+            modifier = Modifier.fillMaxSize().padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            CircularProgressIndicator(color = Green)
+            Spacer(Modifier.height(16.dp))
+            Text("Saldo lädt deine Übersicht …", color = Muted)
+        }
+    }
+}
+
+@Composable
+private fun ConnectionErrorScreen(message: String, onRetry: () -> Unit) {
+    Surface(modifier = Modifier.fillMaxSize(), color = Canvas) {
+        Column(
+            modifier = Modifier.fillMaxSize().padding(28.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text("Keine Verbindung", color = Ink, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(10.dp))
+            Text(message, color = Muted, textAlign = TextAlign.Center)
+            Spacer(Modifier.height(18.dp))
+            Button(onClick = onRetry) { Text("Erneut versuchen") }
+        }
+    }
+}
+
+@Composable
+private fun OverviewScreen(overview: FinanceOverview, modifier: Modifier = Modifier) {
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(start = 20.dp, top = 18.dp, end = 20.dp, bottom = 24.dp),
@@ -161,15 +200,15 @@ private fun OverviewScreen(modifier: Modifier = Modifier) {
             }
         }
 
-        item { DemoBanner() }
-        item { BalanceCard() }
-        item { MonthSummary() }
-        item { SpendingCard() }
+        item { SampleDataBanner() }
+        item { BalanceCard(overview) }
+        item { MonthSummary(overview) }
+        item { SpendingCard(overview) }
         item {
-            SectionHeading("Letzte Umsätze", "Oktober")
+            SectionHeading("Letzte Umsätze", overview.month)
         }
-        items(demoTransactions.take(4)) { transaction ->
-            TransactionRow(transaction)
+        items(overview.transactions.take(4)) { transaction ->
+            TransactionRow(transaction, overview.currency)
         }
         item {
             Text(
@@ -183,7 +222,7 @@ private fun OverviewScreen(modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun DemoBanner() {
+private fun SampleDataBanner() {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -194,14 +233,15 @@ private fun DemoBanner() {
     ) {
         Box(Modifier.size(8.dp).clip(CircleShape).background(Green))
         Spacer(Modifier.width(9.dp))
-        Text("Beispieldaten", color = Green, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-        Spacer(Modifier.width(6.dp))
-        Text("· noch nicht mit einer Bank verbunden", color = Muted, fontSize = 12.sp)
+        Column {
+            Text("Testdaten vom Backend", color = Green, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+            Text("Noch nicht mit einer Bank verbunden", color = Muted, fontSize = 11.sp)
+        }
     }
 }
 
 @Composable
-private fun BalanceCard() {
+private fun BalanceCard(overview: FinanceOverview) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(24.dp),
@@ -213,24 +253,24 @@ private fun BalanceCard() {
                 Text("DEMO", color = Color(0xFFC3DED1), fontSize = 11.sp, fontWeight = FontWeight.Bold)
             }
             Spacer(Modifier.height(8.dp))
-            Text("€ 4.286,17", color = Color.White, fontSize = 34.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.5).sp)
+            Text(formatCurrency(overview.balanceCents, overview.currency), color = Color.White, fontSize = 34.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.5).sp)
             Spacer(Modifier.height(19.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Bank Austria", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                Text(overview.accountInstitution, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium)
                 Spacer(Modifier.width(8.dp))
                 Text("·", color = Color(0xFFC3DED1))
                 Spacer(Modifier.width(8.dp))
-                Text("Beispielkonto", color = Color(0xFFC3DED1), fontSize = 13.sp)
+                Text(overview.accountName, color = Color(0xFFC3DED1), fontSize = 13.sp)
             }
         }
     }
 }
 
 @Composable
-private fun MonthSummary() {
+private fun MonthSummary(overview: FinanceOverview) {
     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        SummaryCard("Einnahmen", "€ 2.400,00", "+ diesen Monat", Green, Modifier.weight(1f))
-        SummaryCard("Ausgaben", "€ 1.246,73", "diesen Monat", Color(0xFFBE5C4C), Modifier.weight(1f))
+        SummaryCard("Einnahmen", formatCurrency(overview.incomeCents, overview.currency), "+ diesen Monat", Green, Modifier.weight(1f))
+        SummaryCard("Ausgaben", formatCurrency(overview.expensesCents, overview.currency), "diesen Monat", Color(0xFFBE5C4C), Modifier.weight(1f))
     }
 }
 
@@ -252,7 +292,7 @@ private fun SummaryCard(title: String, value: String, hint: String, accent: Colo
 }
 
 @Composable
-private fun SpendingCard() {
+private fun SpendingCard(overview: FinanceOverview) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(20.dp),
@@ -262,26 +302,30 @@ private fun SpendingCard() {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Column {
                     Text("Ausgaben", color = Ink, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-                    Text("im Oktober", color = Muted, fontSize = 12.sp)
+                    Text("im ${overview.month}", color = Muted, fontSize = 12.sp)
                 }
-                Text("€ 1.246,73", color = Ink, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                Text(formatCurrency(overview.expensesCents, overview.currency), color = Ink, fontSize = 15.sp, fontWeight = FontWeight.Bold)
             }
             Spacer(Modifier.height(15.dp))
-            SpendingBar("Wohnen", "€ 920,00", 1.0f, Color(0xFF4D9A9A))
-            Spacer(Modifier.height(12.dp))
-            SpendingBar("Transport", "€ 168,00", 0.183f, Color(0xFF6585C5))
-            Spacer(Modifier.height(12.dp))
-            SpendingBar("Essen & Freizeit", "€ 119,63", 0.13f, Color(0xFFE7A344))
-            Spacer(Modifier.height(12.dp))
-            SpendingBar("Shopping", "€ 39,10", 0.043f, Color(0xFFAD72AA))
+            overview.spending.forEachIndexed { index, category ->
+                if (index > 0) Spacer(Modifier.height(12.dp))
+                SpendingBar(category, overview.currency)
+            }
         }
     }
 }
 
 @Composable
-private fun SpendingBar(label: String, amount: String, fraction: Float, color: Color) {
+private fun SpendingBar(category: SpendingCategory, currency: String) {
+    val color = when (category.name) {
+        "Wohnen" -> Color(0xFF4D9A9A)
+        "Transport" -> Color(0xFF6585C5)
+        "Essen & Freizeit" -> Color(0xFFE7A344)
+        "Shopping" -> Color(0xFFAD72AA)
+        else -> Green
+    }
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(label, modifier = Modifier.width(112.dp), color = Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(category.name, modifier = Modifier.width(112.dp), color = Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         Box(
             modifier = Modifier
                 .weight(1f)
@@ -289,10 +333,10 @@ private fun SpendingBar(label: String, amount: String, fraction: Float, color: C
                 .clip(CircleShape)
                 .background(Color(0xFFF0F3F0))
         ) {
-            Box(Modifier.fillMaxWidth(fraction).height(8.dp).clip(CircleShape).background(color))
+            Box(Modifier.fillMaxWidth(category.fraction.coerceIn(0f, 1f)).height(8.dp).clip(CircleShape).background(color))
         }
         Spacer(Modifier.width(10.dp))
-        Text(amount, color = Ink, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+        Text(formatCurrency(category.amountCents, currency), color = Ink, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
     }
 }
 
@@ -310,10 +354,10 @@ private fun SectionHeading(title: String, action: String) {
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
-private fun TransactionsScreen(modifier: Modifier = Modifier) {
+private fun TransactionsScreen(overview: FinanceOverview, modifier: Modifier = Modifier) {
     var selectedCategory by rememberSaveable { mutableStateOf("Alle") }
     val categories = listOf("Alle") + Category.entries.map { it.title }
-    val visibleTransactions = if (selectedCategory == "Alle") demoTransactions else demoTransactions.filter { it.category.title == selectedCategory }
+    val visibleTransactions = if (selectedCategory == "Alle") overview.transactions else overview.transactions.filter { it.category == selectedCategory }
 
     LazyColumn(
         modifier = modifier.fillMaxSize(),
@@ -327,7 +371,7 @@ private fun TransactionsScreen(modifier: Modifier = Modifier) {
                 Text("Alle Umsätze im Überblick", color = Muted, fontSize = 14.sp)
             }
         }
-        item { DemoBanner() }
+        item { SampleDataBanner() }
         item {
             Row(
                 modifier = Modifier.horizontalScroll(rememberScrollState()),
@@ -342,9 +386,9 @@ private fun TransactionsScreen(modifier: Modifier = Modifier) {
                 }
             }
         }
-        item { SectionHeading("Oktober 2026", "${visibleTransactions.size} Umsätze") }
+        item { SectionHeading(overview.month, "${visibleTransactions.size} Umsätze") }
         items(visibleTransactions) { transaction ->
-            TransactionRow(transaction)
+            TransactionRow(transaction, overview.currency)
         }
         if (visibleTransactions.isEmpty()) {
             item { Text("Keine Umsätze in dieser Kategorie.", color = Muted, modifier = Modifier.padding(vertical = 18.dp)) }
@@ -353,7 +397,8 @@ private fun TransactionsScreen(modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun TransactionRow(transaction: Transaction) {
+private fun TransactionRow(transaction: FinanceTransaction, currency: String) {
+    val category = Category.entries.firstOrNull { it.title == transaction.category } ?: Category.Other
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -363,20 +408,20 @@ private fun TransactionRow(transaction: Transaction) {
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
-            modifier = Modifier.size(42.dp).clip(CircleShape).background(transaction.category.color.copy(alpha = 0.13f)),
+            modifier = Modifier.size(42.dp).clip(CircleShape).background(category.color.copy(alpha = 0.13f)),
             contentAlignment = Alignment.Center
         ) {
-            Text(transaction.category.mark, color = transaction.category.color, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            Text(category.mark, color = category.color, fontWeight = FontWeight.Bold, fontSize = 16.sp)
         }
         Spacer(Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(transaction.merchant, color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Spacer(Modifier.height(3.dp))
-            Text("${transaction.category.title} · ${transaction.date}", color = Muted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text("${transaction.category} · ${transaction.dateLabel}", color = Muted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         Spacer(Modifier.width(8.dp))
         Text(
-            formatAmount(transaction.amountCents),
+            formatAmount(transaction.amountCents, currency),
             color = if (transaction.amountCents > 0) Green else Ink,
             fontWeight = FontWeight.Bold,
             fontSize = 14.sp,
@@ -385,9 +430,15 @@ private fun TransactionRow(transaction: Transaction) {
     }
 }
 
-private fun formatAmount(amountCents: Long): String {
-    val currency = NumberFormat.getCurrencyInstance(Locale.GERMANY).format(kotlin.math.abs(amountCents) / 100.0)
+private fun formatAmount(amountCents: Long, currencyCode: String): String {
+    val currency = formatCurrency(kotlin.math.abs(amountCents), currencyCode)
     return if (amountCents > 0) "+$currency" else "−$currency"
+}
+
+private fun formatCurrency(amountCents: Long, currencyCode: String): String {
+    return NumberFormat.getCurrencyInstance(Locale.GERMANY).apply {
+        currency = Currency.getInstance(currencyCode)
+    }.format(amountCents / 100.0)
 }
 
 @Preview(showBackground = true, showSystemUi = true)
@@ -395,7 +446,7 @@ private fun formatAmount(amountCents: Long): String {
 private fun FinanceAppPreview() {
     FinanceTheme {
         Surface(color = Canvas) {
-            OverviewScreen()
+            LoadingScreen()
         }
     }
 }

@@ -1,3 +1,5 @@
+using Finance.Api.Data;
+
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
@@ -20,5 +22,9 @@ app.MapGet("/api/health", () => Results.Ok(new
 }))
 .WithName("GetHealth")
 .WithSummary("Checks that the FinanceApp backend is responding.");
+
+app.MapGet("/api/overview", () => Results.Ok(SampleFinanceData.Overview))
+    .WithName("GetOverview")
+    .WithSummary("Returns the current finance overview from the configured sample data source.");
 
 app.Run();
