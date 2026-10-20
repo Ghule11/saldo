@@ -76,6 +76,11 @@ app.MapGet("/api/banking/data", async (bool? allTransactions, EnableBankingServi
     }
     catch (EnableBankingApiException exception)
     {
+        if (exception.ErrorCode == "EXPIRED_SESSION")
+        {
+            return Results.Problem("Die Bankfreigabe ist abgelaufen. Bitte Bank Austria erneut verbinden.", statusCode: 401);
+        }
+
         return Results.Problem(exception.Message, statusCode: exception.StatusCode, title: "Enable Banking could not be reached");
     }
     catch (InvalidOperationException exception)

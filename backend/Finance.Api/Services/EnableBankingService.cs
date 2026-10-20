@@ -347,8 +347,10 @@ public sealed class EnableBankingService(
         try
         {
             using var document = JsonDocument.Parse(content);
-            return document.RootElement.TryGetProperty("code", out var code)
-                ? code.GetString() ?? "PROVIDER_ERROR"
+            return document.RootElement.ValueKind == JsonValueKind.Object &&
+                   document.RootElement.TryGetProperty("error", out var error) &&
+                   error.ValueKind == JsonValueKind.String
+                ? error.GetString() ?? "PROVIDER_ERROR"
                 : "PROVIDER_ERROR";
         }
         catch (JsonException)
