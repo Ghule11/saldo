@@ -9,9 +9,9 @@ Private, Android-only personal finance app. The GitHub repository is named `fina
 
 ## Current app state
 
-The Android app has a dark interface with purple accents, green incoming amounts, and red outgoing amounts. Its four sections show the balance and monthly totals, searchable transactions with month and direction filters, monthly charts and top outflows, and account details with a refresh action.
+The Android app has a dark interface with purple accents, green incoming amounts, and red outgoing amounts. Its four sections show the balance and monthly totals, searchable transactions with month and direction filters, monthly charts and top outflows, and account details with a refresh action. The overview also lists possible subscriptions and recurring incoming payments when the available history supports them.
 
-Transactions receive local category suggestions. The synthetic Sandbox savings transfer appears separately; real Bank Austria outflows remain in the monthly totals unless the user explicitly marks one as a transfer. Tap a transaction to correct its category; corrections stay in the Android app's local preferences. The analysis also shows spending by category and possible recurring housing or subscription charges. Suggestions may be wrong and can be reset per transaction.
+Transactions receive local category suggestions. SPAR, BILLA, and PENNY are recognized as groceries; BIPA and dm as drugstores. Known subscription services and stable monthly charges are suggested as subscriptions. Tap a transaction to correct its category; outgoing corrections stay in the Android app's local preferences. An incoming sender can be marked as "Eltern" once, which applies to future incoming payments from the same sender. Suggestions may be wrong and can be reset in the app.
 
 The backend exposes `GET /api/health` and `GET /api/overview`. Without a connected sandbox account, the Android app displays the clearly marked sample data. OpenAPI is available in the Development environment.
 
@@ -21,7 +21,9 @@ The provider is Enable Banking. Keep provider private keys, banking credentials,
 
 The backend includes a sandbox-only Enable Banking authorization flow. When a sandbox account is connected, the Android app loads all available transaction pages before calculating monthly totals and charts. It labels the historical month shown, so synthetic data is not presented as current account activity. The connected Mock ASPSP data is synthetic. See [`docs/enable-banking-sandbox.md`](docs/enable-banking-sandbox.md) for local sandbox setup.
 
-The app and backend are prepared for Bank Austria account authorization through a separate, restricted Enable Banking production application. No real account is connected yet. The user must register that production application, link their own account in the Control Panel, and then authorize the account in Saldo. The sandbox and production sessions are stored separately. See [`docs/enable-banking-production.md`](docs/enable-banking-production.md) for the exact steps and emulator limitation.
+The app and backend support Bank Austria account authorization through a separate, restricted Enable Banking production application. Each user must register that production application, link their own account in the Control Panel, and then authorize the account in Saldo. The sandbox and production sessions are stored separately. The displayed transaction history is limited to the dates returned by the bank connection; older history may require a separate statement import. See [`docs/enable-banking-production.md`](docs/enable-banking-production.md) for the exact steps and emulator limitation.
+
+Successful bank responses are encrypted in a local backend cache to reduce repeat requests. A temporary provider rate limit shows the last saved bank response if one exists, or a clear retry message; it never substitutes sample transactions for production bank data.
 
 ## Run locally
 

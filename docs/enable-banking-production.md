@@ -36,4 +36,8 @@ Im Android-Emulator in Saldo **Konto → Bank Austria verbinden** antippen. Sald
 
 Saldo speichert den Sitzungsverweis verschlüsselt unter `%LOCALAPPDATA%\Saldo` und lädt Kontostand und Umsätze über das lokale Backend. Die privaten Schlüssel, Bankzugangsdaten und Kontodaten gehören nicht in GitHub. Wenn eine Bankfreigabe ausläuft, in Saldo erneut verbinden.
 
+Erfolgreich geladene Bankdaten werden dort ebenfalls verschlüsselt zwischengespeichert, damit ein erneutes Öffnen der App nicht sofort wieder die Bank abfragt. Bei einem vorübergehenden Abruflimit zeigt Saldo den letzten gespeicherten Stand mit Zeitangabe. Falls noch kein erfolgreicher Abruf gespeichert wurde, zeigt Saldo einen Fehler mit „Erneut versuchen“ und keine Beispieldaten. Manuelle Aktualisierung fragt die Bank erneut ab, sobald die kurze lokale Abrufpause vorbei ist.
+
+Der angezeigte Zeitraum richtet sich nach den Umsätzen, die Bank Austria über Enable Banking für die Sitzung liefert. Ein weiter zurückliegendes Startdatum kann mit `WRONG_TRANSACTIONS_PERIOD` abgelehnt werden. Saldo erfindet dann keine älteren Buchungen; für zusätzliche Historie wäre ein gesonderter Import von Kontoauszügen nötig.
+
 Quellen: [Enable Banking: eigene Konten verknüpfen](https://enablebanking.com/docs/api/linked-accounts), [Control Panel](https://enablebanking.com/docs/api/control-panel/), [Banken in Österreich](https://enablebanking.com/docs/markets/at).

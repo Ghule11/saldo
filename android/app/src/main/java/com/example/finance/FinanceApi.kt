@@ -22,7 +22,9 @@ data class FinanceOverview(
     val expensesCents: Long,
     val spending: List<SpendingCategory>,
     val transactions: List<FinanceTransaction>,
-    val hasMoreTransactions: Boolean = false
+    val hasMoreTransactions: Boolean = false,
+    val fetchedAt: String? = null,
+    val isCached: Boolean = false
 )
 
 data class SpendingCategory(
@@ -67,9 +69,9 @@ object FinanceApi {
         )
     }
 
-    fun fetchDashboardOverview(status: BankingConnectionStatus): FinanceOverview {
+    fun fetchDashboardOverview(status: BankingConnectionStatus, forceRefresh: Boolean = false): FinanceOverview {
         if (status.accountCount > 0) {
-            return getJson("/api/banking/data?allTransactions=true")
+            return getJson("/api/banking/data?allTransactions=true&forceRefresh=$forceRefresh")
                 .toBankingOverview(status.environment == "SANDBOX")
         }
         return fetchOverview()
@@ -93,6 +95,9 @@ object FinanceApi {
 
             val status = connection.responseCode
             if (status !in 200..299) {
+                if (status == 429) {
+                    throw IOException("Bank Austria lässt gerade keine weiteren Abrufe zu. Bitte später erneut versuchen.")
+                }
                 val detail = connection.errorStream?.bufferedReader()?.use { it.readText() }
                     ?.let { runCatching { JSONObject(it).optString("detail") }.getOrNull() }
                     ?.takeIf { it.isNotBlank() }
@@ -176,7 +181,8 @@ object FinanceApi {
                 val remittance = item.optJSONArray("remittance_information")
                     ?.optString(0)
                     ?.takeUnless { it.isNullOrBlank() || it == "null" }
-                val merchant = listOf("creditor", "debtor")
+                val parties = if (direction == "CRDT") listOf("debtor", "creditor") else listOf("creditor", "debtor")
+                val merchant = parties
                     .firstNotNullOfOrNull { item.optJSONObject(it)?.optString("name")?.cleanValue() }
                     ?: remittance?.replace(Regex("\\s+"), " ")
                     ?: "Umsatz"
@@ -185,9 +191,10 @@ object FinanceApi {
                     .replace(Regex("[()]+$"), "")
                     .replace(Regex("\\s+\\d{4,}$"), "")
                     .trim()
+                val readableMerchant = if (signedAmount < 0) FinanceCategories.displayMerchant(displayMerchant) else displayMerchant
 
                 FinanceTransaction(
-                    merchant = displayMerchant.ifBlank { "Umsatz" },
+                    merchant = readableMerchant.ifBlank { "Umsatz" },
                     detail = remittance ?: item.optJSONObject("bank_transaction_code")?.optString("code").cleanValue().orEmpty(),
                     dateLabel = item.optString("booking_date").toGermanDate(),
                     amountCents = signedAmount,
@@ -227,7 +234,9 @@ object FinanceApi {
             expensesCents = 0,
             spending = emptyList(),
             transactions = transactions,
-            hasMoreTransactions = !continuationKey.isNullOrBlank() && continuationKey != "null"
+            hasMoreTransactions = !continuationKey.isNullOrBlank() && continuationKey != "null",
+            fetchedAt = optString("fetchedAt").cleanValue(),
+            isCached = optBoolean("isCached")
         )
     }
 

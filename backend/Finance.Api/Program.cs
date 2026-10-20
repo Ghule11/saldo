@@ -25,6 +25,7 @@ if (OperatingSystem.IsWindows())
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi();
 builder.Services.AddSingleton<BankingSessionStore>();
+builder.Services.AddSingleton<BankingDataCache>();
 builder.Services.AddHttpClient<EnableBankingService>();
 
 var app = builder.Build();
@@ -68,11 +69,18 @@ app.MapGet("/api/banking/status", async (EnableBankingService banking, Cancellat
 .WithName("GetBankingStatus")
 .WithSummary("Reports the selected Enable Banking environment and connection status.");
 
-app.MapGet("/api/banking/data", async (bool? allTransactions, EnableBankingService banking, CancellationToken cancellationToken) =>
+app.MapGet("/api/banking/data", async (
+    bool? allTransactions,
+    bool? forceRefresh,
+    EnableBankingService banking,
+    CancellationToken cancellationToken) =>
 {
     try
     {
-        return Results.Ok(await banking.GetAccountDataAsync(cancellationToken, allTransactions == true));
+        return Results.Ok(await banking.GetAccountDataAsync(
+            cancellationToken,
+            allTransactions == true,
+            forceRefresh == true));
     }
     catch (EnableBankingApiException exception)
     {

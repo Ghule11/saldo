@@ -11,7 +11,8 @@ namespace Finance.Api.Services;
 public sealed class EnableBankingService(
     HttpClient httpClient,
     IConfiguration configuration,
-    BankingSessionStore sessionStore)
+    BankingSessionStore sessionStore,
+    BankingDataCache dataCache)
 {
     private const string ApiBaseUrl = "https://api.enablebanking.com";
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -80,68 +81,100 @@ public sealed class EnableBankingService(
             .ToArray();
     }
 
-    public async Task<BankingAccountDataResponse> GetAccountDataAsync(CancellationToken cancellationToken, bool allTransactions = false)
+    public async Task<BankingAccountDataResponse> GetAccountDataAsync(
+        CancellationToken cancellationToken,
+        bool allTransactions = false,
+        bool forceRefresh = false)
     {
         await EnsureActiveApplicationAsync(cancellationToken);
 
         var connected = sessionStore.GetConnectedSession(_mode)
             ?? throw new InvalidOperationException("Zuerst ein Konto verbinden.");
-
-        var accounts = new List<BankingAccountData>();
-        foreach (var accountUid in connected.AccountUids)
+        var cached = dataCache.Get(_mode, connected.SessionId, allTransactions);
+        if (!forceRefresh && cached is not null && DateTimeOffset.UtcNow - cached.FetchedAt < TimeSpan.FromMinutes(15))
         {
-            var encodedAccountUid = Uri.EscapeDataString(accountUid);
-            var balances = await SendAsync<JsonElement>(
-                HttpMethod.Get,
-                $"/accounts/{encodedAccountUid}/balances",
-                null,
-                cancellationToken);
-            var transactionPath = $"/accounts/{encodedAccountUid}/transactions";
-            var transactions = await SendAsync<JsonElement>(HttpMethod.Get, transactionPath, null, cancellationToken);
-
-            if (allTransactions)
+            return cached;
+        }
+        if (dataCache.IsRateLimited())
+        {
+            if (cached is not null && DateTimeOffset.UtcNow - cached.FetchedAt < TimeSpan.FromHours(24))
             {
-                var collected = new List<JsonElement>();
-                var seenKeys = new HashSet<string>(StringComparer.Ordinal);
-                for (var page = 0; page < 100; page++)
-                {
-                    if (transactions.TryGetProperty("transactions", out var items) && items.ValueKind == JsonValueKind.Array)
-                    {
-                        collected.AddRange(items.EnumerateArray());
-                    }
-
-                    var continuationKey = transactions.TryGetProperty("continuation_key", out var key)
-                        && key.ValueKind == JsonValueKind.String ? key.GetString() : null;
-                    if (string.IsNullOrWhiteSpace(continuationKey))
-                    {
-                        transactions = JsonSerializer.SerializeToElement(new
-                        {
-                            transactions = collected,
-                            continuation_key = (string?)null
-                        });
-                        break;
-                    }
-
-                    if (!seenKeys.Add(continuationKey) || page == 99)
-                    {
-                        throw new InvalidOperationException("Die Umsätze konnten nicht vollständig geladen werden.");
-                    }
-
-                    transactions = await SendAsync<JsonElement>(
-                        HttpMethod.Get,
-                        $"{transactionPath}?continuation_key={Uri.EscapeDataString(continuationKey)}",
-                        null,
-                        cancellationToken);
-                }
+                return cached;
             }
-
-            accounts.Add(new BankingAccountData(balances, transactions));
+            throw new EnableBankingApiException(429, "ASPSP_RATE_LIMIT_EXCEEDED");
         }
 
-        return new BankingAccountDataResponse(
-            connected.InstitutionName,
-            connected.InstitutionCountry,
-            accounts);
+        try
+        {
+            var accounts = new List<BankingAccountData>();
+            foreach (var accountUid in connected.AccountUids)
+            {
+                var encodedAccountUid = Uri.EscapeDataString(accountUid);
+                var balances = await SendAsync<JsonElement>(
+                    HttpMethod.Get,
+                    $"/accounts/{encodedAccountUid}/balances",
+                    null,
+                    cancellationToken);
+                var transactionPath = $"/accounts/{encodedAccountUid}/transactions";
+                var transactions = await SendAsync<JsonElement>(HttpMethod.Get, transactionPath, null, cancellationToken);
+
+                if (allTransactions)
+                {
+                    var collected = new List<JsonElement>();
+                    var seenKeys = new HashSet<string>(StringComparer.Ordinal);
+                    for (var page = 0; page < 100; page++)
+                    {
+                        if (transactions.TryGetProperty("transactions", out var items) && items.ValueKind == JsonValueKind.Array)
+                        {
+                            collected.AddRange(items.EnumerateArray());
+                        }
+
+                        var continuationKey = transactions.TryGetProperty("continuation_key", out var key)
+                            && key.ValueKind == JsonValueKind.String ? key.GetString() : null;
+                        if (string.IsNullOrWhiteSpace(continuationKey))
+                        {
+                            transactions = JsonSerializer.SerializeToElement(new
+                            {
+                                transactions = collected,
+                                continuation_key = (string?)null
+                            });
+                            break;
+                        }
+
+                        if (!seenKeys.Add(continuationKey) || page == 99)
+                        {
+                            throw new InvalidOperationException("Die Umsätze konnten nicht vollständig geladen werden.");
+                        }
+
+                        transactions = await SendAsync<JsonElement>(
+                            HttpMethod.Get,
+                            $"{transactionPath}?continuation_key={Uri.EscapeDataString(continuationKey)}",
+                            null,
+                            cancellationToken);
+                    }
+                }
+
+                accounts.Add(new BankingAccountData(balances, transactions));
+            }
+
+            var result = new BankingAccountDataResponse(
+                connected.InstitutionName,
+                connected.InstitutionCountry,
+                accounts,
+                DateTimeOffset.UtcNow,
+                false);
+            dataCache.Save(_mode, connected.SessionId, allTransactions, result);
+            return result;
+        }
+        catch (EnableBankingApiException exception) when (exception.StatusCode == 429)
+        {
+            dataCache.MarkRateLimited();
+            if (cached is not null && DateTimeOffset.UtcNow - cached.FetchedAt < TimeSpan.FromHours(24))
+            {
+                return cached;
+            }
+            throw;
+        }
     }
 
     public async Task<AuthorizationStartResult> StartAuthorizationAsync(
@@ -452,7 +485,9 @@ public sealed record BankingStatus(
 public sealed record BankingAccountDataResponse(
     string InstitutionName,
     string InstitutionCountry,
-    IReadOnlyList<BankingAccountData> Accounts);
+    IReadOnlyList<BankingAccountData> Accounts,
+    DateTimeOffset FetchedAt,
+    bool IsCached);
 public sealed record BankingAccountData(JsonElement Balances, JsonElement Transactions);
 public sealed record AuthorizationStartResult(string Url, string State, string RedirectUrl);
 public sealed record AuthorizationCompletionResult(string InstitutionName, string InstitutionCountry, int AccountCount);

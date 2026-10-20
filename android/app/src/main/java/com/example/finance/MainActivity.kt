@@ -68,6 +68,9 @@ import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
 import com.example.finance.ui.theme.FinanceTheme
 import java.text.NumberFormat
+import java.time.OffsetDateTime
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.Currency
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
@@ -116,7 +119,25 @@ private fun FinanceApp() {
     val scope = rememberCoroutineScope()
     val categoryStore = remember(context) { CategoryOverrideStore(context.applicationContext) }
     var categoryOverrides by remember { mutableStateOf(categoryStore.load()) }
+    var parentSenders by remember { mutableStateOf(categoryStore.loadParentSenders()) }
     var editingTransaction by remember { mutableStateOf<FinanceTransaction?>(null) }
+
+    fun startBankConnection() {
+        if (isConnecting) return
+        isConnecting = true
+        connectError = null
+        connectNotice = null
+        scope.launch {
+            try {
+                withContext(Dispatchers.IO) { FinanceApi.startBankAustriaAuthorization() }
+                connectNotice = "Freigabe im Browser auf deinem Computer abschließen. Danach hier Daten aktualisieren."
+            } catch (exception: Exception) {
+                connectError = exception.message ?: "Die Verbindung konnte nicht gestartet werden."
+            } finally {
+                isConnecting = false
+            }
+        }
+    }
 
     LaunchedEffect(reloadKey) {
         isLoading = true
@@ -125,14 +146,15 @@ private fun FinanceApp() {
             val status = withContext(Dispatchers.IO) { FinanceApi.fetchBankingStatus() }
             bankingStatus = status
             overview = try {
-                withContext(Dispatchers.IO) { FinanceApi.fetchDashboardOverview(status) }
+                withContext(Dispatchers.IO) { FinanceApi.fetchDashboardOverview(status, reloadKey > 0) }
             } catch (exception: Exception) {
                 if (status.environment != "PRODUCTION") throw exception
                 errorMessage = "Bankdaten konnten nicht geladen werden: ${exception.message ?: "Verbindung abgelaufen"}"
-                withContext(Dispatchers.IO) { FinanceApi.fetchOverview() }
+                overview?.takeIf { it.dataSource == "banking_production" }?.copy(isCached = true)
             }
         } catch (_: Exception) {
             errorMessage = "Die Finanzdaten konnten nicht geladen werden. Prüfe, ob Saldo auf dem Computer läuft."
+            overview = overview?.takeIf { it.dataSource == "banking_production" }?.copy(isCached = true)
         } finally {
             isLoading = false
         }
@@ -140,10 +162,18 @@ private fun FinanceApp() {
 
     val data = overview
     if (data == null) {
-        if (isLoading) LoadingScreen() else ConnectionErrorScreen(errorMessage.orEmpty()) { reloadKey++ }
+        if (isLoading) LoadingScreen() else ConnectionErrorScreen(
+            errorMessage.orEmpty(),
+            { reloadKey++ },
+            if (errorMessage?.contains("abgelaufen", ignoreCase = true) == true) ::startBankConnection else null,
+            connectNotice,
+            connectError
+        )
         return
     }
-    val categorized = remember(data, categoryOverrides) { FinanceCategories.apply(data, categoryOverrides) }
+    val categorized = remember(data, categoryOverrides, parentSenders) {
+        FinanceCategories.apply(data, categoryOverrides, parentSenders)
+    }
     val months = remember(categorized) { FinanceInsights.months(categorized) }
 
     Scaffold(
@@ -174,25 +204,9 @@ private fun FinanceApp() {
             AppTab.Transactions -> TransactionsScreen(categorized, months, { editingTransaction = it }, modifier)
             AppTab.Analysis -> AnalysisScreen(categorized, months, modifier)
             AppTab.Account -> AccountScreen(
-                categorized, months, categoryOverrides.size, bankingStatus, isLoading,
+                categorized, months, categoryOverrides.size + parentSenders.size, bankingStatus, isLoading,
                 isConnecting, errorMessage, connectError, connectNotice, { reloadKey++ },
-                {
-                    if (!isConnecting) {
-                        isConnecting = true
-                        connectError = null
-                        connectNotice = null
-                        scope.launch {
-                            try {
-                                withContext(Dispatchers.IO) { FinanceApi.startBankAustriaAuthorization() }
-                                connectNotice = "Freigabe im Browser auf deinem Computer abschließen. Danach hier Daten aktualisieren."
-                            } catch (exception: Exception) {
-                                connectError = exception.message ?: "Die Verbindung konnte nicht gestartet werden."
-                            } finally {
-                                isConnecting = false
-                            }
-                        }
-                    }
-                }, modifier)
+                { startBankConnection() }, modifier)
         }
     }
 
@@ -201,9 +215,16 @@ private fun FinanceApp() {
             transaction = transaction,
             onDismiss = { editingTransaction = null },
             onChoose = { choice ->
-                categoryStore.save(transaction.identity, choice)
-                categoryOverrides = categoryOverrides.toMutableMap().apply {
-                    if (choice == null) remove(transaction.identity) else put(transaction.identity, choice)
+                if (transaction.amountCents > 0) {
+                    categoryStore.save(transaction.identity, null)
+                    categoryOverrides = categoryOverrides - transaction.identity
+                    categoryStore.saveParentSender(transaction.merchant, choice == TransactionCategory.Parents)
+                    parentSenders = categoryStore.loadParentSenders()
+                } else {
+                    categoryStore.save(transaction.identity, choice)
+                    categoryOverrides = categoryOverrides.toMutableMap().apply {
+                        if (choice == null) remove(transaction.identity) else put(transaction.identity, choice)
+                    }
                 }
                 editingTransaction = null
             }
@@ -227,7 +248,13 @@ private fun LoadingScreen() {
 }
 
 @Composable
-private fun ConnectionErrorScreen(message: String, onRetry: () -> Unit) {
+private fun ConnectionErrorScreen(
+    message: String,
+    onRetry: () -> Unit,
+    onConnect: (() -> Unit)? = null,
+    connectNotice: String? = null,
+    connectError: String? = null
+) {
     Surface(modifier = Modifier.fillMaxSize(), color = Background) {
         Column(
             modifier = Modifier.fillMaxSize().padding(28.dp),
@@ -239,6 +266,12 @@ private fun ConnectionErrorScreen(message: String, onRetry: () -> Unit) {
             Text(message, color = Muted, textAlign = TextAlign.Center)
             Spacer(Modifier.height(18.dp))
             ActionButton("Erneut versuchen", onRetry)
+            if (onConnect != null) {
+                Spacer(Modifier.height(12.dp))
+                ActionButton("Bank Austria erneut verbinden", onConnect)
+            }
+            connectNotice?.let { Text(it, color = Muted, textAlign = TextAlign.Center) }
+            connectError?.let { Text(it, color = Red, textAlign = TextAlign.Center) }
         }
     }
 }
@@ -252,13 +285,14 @@ private fun OverviewScreen(data: FinanceOverview, months: List<MonthlySnapshot>,
         verticalArrangement = Arrangement.spacedBy(17.dp)
     ) {
         item { ScreenTitle("Saldo", "Dein Geld im Blick") }
-        item { DataSourceBanner(data.dataSource) }
+        item { DataSourceBanner(data) }
         item { BalanceCard(data) }
         if (current != null) {
             item { SectionHeading("Monatsübersicht", current.label) }
             item { MonthlyTotals(current, data.currency) }
             item { NetCard(current, data.currency) }
-            if (current.transferInCents > 0 || current.transferOutCents > 0) item { TransferCard(current, data.currency) }
+            item { RecurringIncomeCard(data, data.currency) }
+            item { SubscriptionsCard(data, data.currency) }
             item { MonthlyChart(months, data.currency) }
             item { SectionHeading("Letzte Umsätze", current.label) }
             items(current.transactions.take(4)) { TransactionRow(it, data.currency, onTransactionClick) }
@@ -276,9 +310,8 @@ private fun TransactionsScreen(data: FinanceOverview, months: List<MonthlySnapsh
     val selectedMonth = months.firstOrNull { it.key == monthKey }
     val filtered = (selectedMonth?.transactions ?: data.transactions)
         .filter { direction == "Alle" ||
-            (direction == "Eingänge" && it.amountCents > 0 && it.category != TransactionCategory.Transfer.label) ||
-            (direction == "Ausgaben" && it.amountCents < 0 && it.category != TransactionCategory.Transfer.label) ||
-            (direction == "Umbuchungen" && it.category == TransactionCategory.Transfer.label) }
+            (direction == "Eingänge" && it.amountCents > 0) ||
+            (direction == "Ausgaben" && it.amountCents < 0) }
         .filter { query.isBlank() || it.merchant.contains(query, ignoreCase = true) ||
             it.detail.contains(query, ignoreCase = true) }
         .sortedByDescending { it.bookingDate ?: "" }
@@ -310,7 +343,7 @@ private fun TransactionsScreen(data: FinanceOverview, months: List<MonthlySnapsh
                 modifier = Modifier.horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                listOf("Alle", "Eingänge", "Ausgaben", "Umbuchungen").forEach { option ->
+                listOf("Alle", "Eingänge", "Ausgaben").forEach { option ->
                     ChoiceChip(option, direction == option) { direction = option }
                 }
             }
@@ -358,11 +391,9 @@ private fun AnalysisScreen(data: FinanceOverview, months: List<MonthlySnapshot>,
             item { SectionHeading(month.label, "${month.transactions.size} Umsätze") }
             item { MonthlyTotals(month, data.currency) }
             item { NetCard(month, data.currency) }
-            if (month.transferInCents > 0 || month.transferOutCents > 0) item { TransferCard(month, data.currency) }
             item { MonthlyChart(months, data.currency) }
             item { CategoryChart(month, data.currency) }
             item { OutflowChart(month, data.currency) }
-            item { RecurringCard(data, data.currency) }
         } else {
             item { EmptyNote("Noch keine Monatsdaten verfügbar.") }
         }
@@ -390,7 +421,7 @@ private fun AccountScreen(
         verticalArrangement = Arrangement.spacedBy(17.dp)
     ) {
         item { ScreenTitle("Konto", "Verbindung und Daten") }
-        item { DataSourceBanner(data.dataSource) }
+        item { DataSourceBanner(data) }
         if (bankingStatus?.environment != "PRODUCTION" || data.dataSource == "banking_production") {
             item { BalanceCard(data) }
             item {
@@ -443,7 +474,7 @@ private fun ScreenTitle(title: String, subtitle: String) {
 }
 
 @Composable
-private fun DataSourceBanner(dataSource: String) {
+private fun DataSourceBanner(data: FinanceOverview) {
     Row(
         modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp))
             .background(PanelRaised).padding(horizontal = 15.dp, vertical = 12.dp),
@@ -451,11 +482,20 @@ private fun DataSourceBanner(dataSource: String) {
     ) {
         Box(Modifier.size(8.dp).clip(CircleShape).background(Purple))
         Spacer(Modifier.width(10.dp))
-        Text(when (dataSource) {
-            "banking_sandbox" -> "Verbundenes Testkonto · Sandbox"
-            "banking_production" -> "Verbundenes Bankkonto · Bank Austria"
+        val fetchedAt = data.fetchedAt?.let { value ->
+            runCatching {
+                OffsetDateTime.parse(value).atZoneSameInstant(ZoneId.systemDefault())
+                    .format(DateTimeFormatter.ofPattern("dd.MM. HH:mm", Locale.GERMANY))
+            }.getOrNull()
+        }
+        val label = when {
+            data.dataSource == "banking_sandbox" -> "Verbundenes Testkonto · Sandbox"
+            data.dataSource == "banking_production" && data.isCached ->
+                if (fetchedAt == null) "Gespeicherte Bankdaten" else "Bankdaten · Stand $fetchedAt"
+            data.dataSource == "banking_production" -> "Verbundenes Bankkonto · Bank Austria"
             else -> "Beispieldaten"
-        }, color = Purple, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        }
+        Text(label, color = Purple, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
     }
 }
 
@@ -500,16 +540,6 @@ private fun NetCard(month: MonthlySnapshot, currency: String) {
     ) {
         Text("Überschuss", color = Muted, fontSize = 13.sp)
         Text(formatSigned(month.netCents, currency), color = if (month.netCents >= 0) Green else Red, fontSize = 15.sp, fontWeight = FontWeight.Bold)
-    }
-}
-
-@Composable
-private fun TransferCard(month: MonthlySnapshot, currency: String) {
-    PanelCard {
-        SectionHeading("Umbuchungen", "Nicht als Ausgabe gezählt")
-        Spacer(Modifier.height(9.dp))
-        if (month.transferOutCents > 0) Text("Ausgehend  −${formatCurrency(month.transferOutCents, currency)}", color = Purple, fontSize = 13.sp)
-        if (month.transferInCents > 0) Text("Eingehend  +${formatCurrency(month.transferInCents, currency)}", color = Purple, fontSize = 13.sp)
     }
 }
 
@@ -599,20 +629,38 @@ private fun CategoryChart(month: MonthlySnapshot, currency: String) {
 }
 
 @Composable
-private fun RecurringCard(data: FinanceOverview, currency: String) {
-    val recurring = remember(data) { FinanceInsights.recurringExpenses(data) }
-    if (recurring.isEmpty()) return
+private fun SubscriptionsCard(data: FinanceOverview, currency: String) {
+    val subscriptions = remember(data) { FinanceInsights.subscriptions(data) }
+    if (subscriptions.isEmpty()) return
+    RecurringEntriesCard("Mögliche Abos", "Aus Buchungen erkannt", subscriptions, currency, Red)
+}
+
+@Composable
+private fun RecurringIncomeCard(data: FinanceOverview, currency: String) {
+    val income = remember(data) { FinanceInsights.recurringIncome(data) }
+    if (income.isEmpty()) return
+    RecurringEntriesCard("Regelmäßige Eingänge", "Mindestens 2 Monate", income, currency, Green)
+}
+
+@Composable
+private fun RecurringEntriesCard(
+    title: String,
+    detail: String,
+    entries: List<RecurringEntry>,
+    currency: String,
+    accent: Color
+) {
     PanelCard {
-        SectionHeading("Möglicherweise regelmäßig", "Mindestens 3 Monate")
+        SectionHeading(title, detail)
         Spacer(Modifier.height(12.dp))
-        recurring.forEach { item ->
+        entries.forEach { item ->
             Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), horizontalArrangement = Arrangement.SpaceBetween) {
                 Column(Modifier.weight(1f)) {
                     Text(item.name, color = Ink, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text("In ${item.monthCount} Monaten", color = Muted, fontSize = 10.sp)
+                    Text("In ${item.monthCount} Monaten · letzte Buchung", color = Muted, fontSize = 10.sp)
                 }
                 Spacer(Modifier.width(8.dp))
-                Text(formatCurrency(item.amountCents, currency), color = Red, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                Text(formatCurrency(item.amountCents, currency), color = accent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
             }
         }
     }
@@ -630,15 +678,14 @@ private fun LegendDot(label: String, color: Color) {
 @Composable
 private fun TransactionRow(transaction: FinanceTransaction, currency: String, onClick: (FinanceTransaction) -> Unit) {
     val incoming = transaction.amountCents >= 0
-    val transfer = transaction.category == TransactionCategory.Transfer.label
-    val accent = if (transfer) Purple else if (incoming) Green else Red
+    val accent = if (incoming) Green else Red
     Row(
         modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp))
             .background(Panel).clickable { onClick(transaction) }.padding(horizontal = 14.dp, vertical = 13.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(Modifier.size(42.dp).clip(CircleShape).background(accent.copy(alpha = 0.14f)), contentAlignment = Alignment.Center) {
-            Text(if (transfer) "⇄" else if (incoming) "↓" else "↑", color = accent, fontSize = 19.sp, fontWeight = FontWeight.Bold)
+            Text(if (incoming) "↓" else "↑", color = accent, fontSize = 19.sp, fontWeight = FontWeight.Bold)
         }
         Spacer(Modifier.width(11.dp))
         Column(Modifier.weight(1f)) {
@@ -664,6 +711,10 @@ private fun CategoryDialog(
         text = {
             Column {
                 Text(transaction.merchant, color = Muted, fontSize = 13.sp, maxLines = 2)
+                if (transaction.amountCents > 0) {
+                    Spacer(Modifier.height(6.dp))
+                    Text("Eltern gilt für alle Eingänge von diesem Absender.", color = Muted, fontSize = 11.sp)
+                }
                 Spacer(Modifier.height(9.dp))
                 Column(Modifier.heightIn(max = 380.dp).verticalScroll(rememberScrollState())) {
                     FinanceCategories.choices(transaction).forEach { category ->
