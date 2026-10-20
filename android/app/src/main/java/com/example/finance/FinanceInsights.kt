@@ -18,7 +18,13 @@ data class MonthlySnapshot(
 }
 
 data class MerchantOutflow(val name: String, val amountCents: Long)
-data class RecurringEntry(val name: String, val amountCents: Long, val monthCount: Int)
+data class RecurringEntry(
+    val key: String,
+    val name: String,
+    val amountCents: Long,
+    val monthCount: Int,
+    val lastDate: String
+)
 
 object FinanceInsights {
     private val monthFormat = DateTimeFormatter.ofPattern("LLLL yyyy", Locale.GERMAN)
@@ -84,39 +90,44 @@ object FinanceInsights {
         .filter { it.amountCents < 0 && it.category == TransactionCategory.Subscriptions.label }
         .groupBy { FinanceCategories.recurringMerchantKey(it.merchant) }
         .filterKeys { it.isNotBlank() }
-        .values
-        .map { entries ->
+        .map { (merchantKey, entries) ->
             val latest = entries.maxBy { it.bookingDate.orEmpty() }
             RecurringEntry(
+                "subscription:$merchantKey",
                 latest.merchant,
                 -latest.amountCents,
-                entries.mapNotNull { monthOf(it) }.distinct().size
+                entries.mapNotNull { monthOf(it) }.distinct().size,
+                latest.dateLabel
             )
         }
         .sortedWith(compareByDescending<RecurringEntry> { it.monthCount }.thenByDescending { it.amountCents })
-        .take(6)
 
     fun recurringIncome(overview: FinanceOverview): List<RecurringEntry> = overview.transactions
-        .filter { it.amountCents > 0 }
+        .filter { it.amountCents > 0 && !it.merchant.contains("Bareinzahlung", ignoreCase = true) &&
+            !it.detail.contains("Einzahlung Automat", ignoreCase = true) }
         .groupBy { FinanceCategories.senderKey(it.merchant) }
         .filterKeys { it.length >= 3 }
-        .values
-        .filter { entries ->
+        .filterValues { entries ->
             val dates = entries.mapNotNull { dateOf(it) }.sorted()
             dates.map { YearMonth.from(it) }.distinct().size >= 2 &&
                 dates.zipWithNext().any { (first, second) -> ChronoUnit.DAYS.between(first, second) in 20..45 }
         }
-        .map { entries ->
+        .map { (senderKey, entries) ->
             val latest = entries.maxBy { it.bookingDate.orEmpty() }
             val name = if (entries.any { it.category == TransactionCategory.Parents.label }) {
-                "Eltern · ${latest.merchant}"
+                "Eltern · ${FinanceCategories.displaySender(latest.merchant)}"
             } else {
-                latest.merchant
+                FinanceCategories.displaySender(latest.merchant)
             }
-            RecurringEntry(name, latest.amountCents, entries.mapNotNull { monthOf(it) }.distinct().size)
+            RecurringEntry(
+                "income:$senderKey",
+                name,
+                latest.amountCents,
+                entries.mapNotNull { monthOf(it) }.distinct().size,
+                latest.dateLabel
+            )
         }
         .sortedWith(compareByDescending<RecurringEntry> { it.monthCount }.thenByDescending { it.amountCents })
-        .take(5)
 
     private fun dateOf(transaction: FinanceTransaction): LocalDate? =
         transaction.bookingDate?.let { runCatching { LocalDate.parse(it) }.getOrNull() }

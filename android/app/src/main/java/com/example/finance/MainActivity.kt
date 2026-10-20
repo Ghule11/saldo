@@ -118,9 +118,21 @@ private fun FinanceApp() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val categoryStore = remember(context) { CategoryOverrideStore(context.applicationContext) }
+    val recurringStore = remember(context) { RecurringVisibilityStore(context.applicationContext) }
     var categoryOverrides by remember { mutableStateOf(categoryStore.load()) }
     var parentSenders by remember { mutableStateOf(categoryStore.loadParentSenders()) }
+    var hiddenRecurring by remember { mutableStateOf(recurringStore.load()) }
     var editingTransaction by remember { mutableStateOf<FinanceTransaction?>(null) }
+
+    fun hideRecurring(key: String) {
+        recurringStore.hide(key)
+        hiddenRecurring = recurringStore.load()
+    }
+
+    fun restoreRecurring(prefix: String) {
+        recurringStore.restore(prefix)
+        hiddenRecurring = recurringStore.load()
+    }
 
     fun startBankConnection() {
         if (isConnecting) return
@@ -217,7 +229,10 @@ private fun FinanceApp() {
     ) { padding ->
         val modifier = Modifier.padding(padding)
         when (selectedTab) {
-            AppTab.Overview -> OverviewScreen(categorized, months, { editingTransaction = it }, modifier)
+            AppTab.Overview -> OverviewScreen(
+                categorized, months, hiddenRecurring, ::hideRecurring, ::restoreRecurring,
+                { editingTransaction = it }, modifier
+            )
             AppTab.Transactions -> TransactionsScreen(categorized, months, { editingTransaction = it }, modifier)
             AppTab.Analysis -> AnalysisScreen(categorized, months, modifier)
             AppTab.Account -> AccountScreen(
@@ -294,7 +309,15 @@ private fun ConnectionErrorScreen(
 }
 
 @Composable
-private fun OverviewScreen(data: FinanceOverview, months: List<MonthlySnapshot>, onTransactionClick: (FinanceTransaction) -> Unit, modifier: Modifier) {
+private fun OverviewScreen(
+    data: FinanceOverview,
+    months: List<MonthlySnapshot>,
+    hiddenRecurring: Set<String>,
+    onHideRecurring: (String) -> Unit,
+    onRestoreRecurring: (String) -> Unit,
+    onTransactionClick: (FinanceTransaction) -> Unit,
+    modifier: Modifier
+) {
     val current = months.firstOrNull()
     LazyColumn(
         modifier = modifier.fillMaxSize(),
@@ -308,8 +331,8 @@ private fun OverviewScreen(data: FinanceOverview, months: List<MonthlySnapshot>,
             item { SectionHeading("Monatsübersicht", current.label) }
             item { MonthlyTotals(current, data.currency) }
             item { NetCard(current, data.currency) }
-            item { RecurringIncomeCard(data, data.currency) }
-            item { SubscriptionsCard(data, data.currency) }
+            item { RecurringIncomeCard(data, data.currency, hiddenRecurring, onHideRecurring, onRestoreRecurring) }
+            item { SubscriptionsCard(data, data.currency, hiddenRecurring, onHideRecurring, onRestoreRecurring) }
             item { MonthlyChart(months, data.currency) }
             item { SectionHeading("Letzte Umsätze", current.label) }
             items(current.transactions.take(4)) { TransactionRow(it, data.currency, onTransactionClick) }
@@ -658,39 +681,68 @@ private fun CategoryChart(month: MonthlySnapshot, currency: String) {
 }
 
 @Composable
-private fun SubscriptionsCard(data: FinanceOverview, currency: String) {
+private fun SubscriptionsCard(
+    data: FinanceOverview,
+    currency: String,
+    hidden: Set<String>,
+    onHide: (String) -> Unit,
+    onRestore: (String) -> Unit
+) {
     val subscriptions = remember(data) { FinanceInsights.subscriptions(data) }
     if (subscriptions.isEmpty()) return
-    RecurringEntriesCard("Mögliche Abos", "Aus Buchungen erkannt", subscriptions, currency, Red)
+    RecurringEntriesCard("Mögliche Abos", "Bekannte Dienste oder selbst zugeordnet", "subscription:",
+        subscriptions, currency, Red, hidden, onHide, onRestore)
 }
 
 @Composable
-private fun RecurringIncomeCard(data: FinanceOverview, currency: String) {
+private fun RecurringIncomeCard(
+    data: FinanceOverview,
+    currency: String,
+    hidden: Set<String>,
+    onHide: (String) -> Unit,
+    onRestore: (String) -> Unit
+) {
     val income = remember(data) { FinanceInsights.recurringIncome(data) }
     if (income.isEmpty()) return
-    RecurringEntriesCard("Regelmäßige Eingänge", "Mindestens 2 Monate", income, currency, Green)
+    RecurringEntriesCard("Regelmäßige Eingänge", "Mindestens 2 Monate", "income:",
+        income, currency, Green, hidden, onHide, onRestore)
 }
 
 @Composable
 private fun RecurringEntriesCard(
     title: String,
     detail: String,
+    keyPrefix: String,
     entries: List<RecurringEntry>,
     currency: String,
-    accent: Color
+    accent: Color,
+    hidden: Set<String>,
+    onHide: (String) -> Unit,
+    onRestore: (String) -> Unit
 ) {
+    val visible = entries.filterNot { it.key in hidden }.take(6)
+    val hasHidden = entries.any { it.key in hidden }
     PanelCard {
         SectionHeading(title, detail)
         Spacer(Modifier.height(12.dp))
-        entries.forEach { item ->
+        if (visible.isEmpty()) Text("Alle Einträge ausgeblendet.", color = Muted, fontSize = 12.sp)
+        visible.forEach { item ->
             Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), horizontalArrangement = Arrangement.SpaceBetween) {
                 Column(Modifier.weight(1f)) {
-                    Text(item.name, color = Ink, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text("In ${item.monthCount} Monaten · letzte Buchung", color = Muted, fontSize = 10.sp)
+                    Text(item.name, color = Ink, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text("In ${item.monthCount} Monaten · zuletzt ${item.lastDate}", color = Muted, fontSize = 10.sp)
                 }
                 Spacer(Modifier.width(8.dp))
-                Text(formatCurrency(item.amountCents, currency), color = accent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(formatCurrency(item.amountCents, currency), color = accent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    TextButton(onClick = { onHide(item.key) }) {
+                        Text("Entfernen", color = Muted, fontSize = 10.sp)
+                    }
+                }
             }
+        }
+        if (hasHidden) TextButton(onClick = { onRestore(keyPrefix) }) {
+            Text("Ausgeblendete wieder anzeigen", color = Purple, fontSize = 11.sp)
         }
     }
 }
@@ -739,7 +791,7 @@ private fun CategoryDialog(
         title = { Text("Umsatz zuordnen", color = Ink, fontWeight = FontWeight.Bold) },
         text = {
             Column {
-                Text(transaction.merchant, color = Muted, fontSize = 13.sp, maxLines = 2)
+                Text("${transaction.merchant} · ${transaction.dateLabel}", color = Muted, fontSize = 13.sp, maxLines = 2)
                 if (transaction.amountCents > 0) {
                     Spacer(Modifier.height(6.dp))
                     Text("Eltern gilt für alle Eingänge von diesem Absender.", color = Muted, fontSize = 11.sp)

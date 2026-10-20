@@ -1,9 +1,6 @@
 package com.example.finance
 
 import android.content.Context
-import java.time.LocalDate
-import java.time.YearMonth
-import java.time.temporal.ChronoUnit
 import java.util.Locale
 
 enum class TransactionCategory(val label: String) {
@@ -14,18 +11,25 @@ enum class TransactionCategory(val label: String) {
     Drugstore("Drogerie"),
     Mobility("Mobilität"),
     Subscriptions("Abos"),
+    Restaurants("Restaurants"),
     Shopping("Shopping"),
     Health("Gesundheit"),
     Leisure("Freizeit"),
+    Cash("Bargeld"),
+    Taxes("Steuern & Gebühren"),
     Other("Sonstiges")
 }
 
 object FinanceCategories {
-    private val groceryPattern = Regex("(?iu)(?<!\\p{L})(?:interspar|spar|billa|penny|hofer|lidl|aldi|netto)(?!\\p{L})")
+    private val groceryPattern = Regex("(?iu)(?<!\\p{L})(?:interspar|intersp\\.?|spar|billa|penny|hofer|lidl|aldi|netto)(?!\\p{L})")
     private val drugstorePattern = Regex("(?iu)(?<!\\p{L})(?:bipa|dm)(?!\\p{L})|drogerie|drogeriemarkt")
+    private val restaurantPattern = Regex(
+        "(?iu)mcdonald|burger king|(?<!\\p{L})kfc(?!\\p{L})|kebap|kebab|" +
+            "restaurant|pizzeria|pizza|sushi|lieferando|cafe|café|coffee|caterei|bortolotti|bongiorno"
+    )
     private val monthlySubscriptionPattern = Regex(
         "(?iu)spotify|netflix|disney\\+|disney plus|youtube premium|apple music|google one|" +
-            "icloud\\+?|prime video|amazon prime|microsoft 365|office 365|chatgpt plus"
+            "icloud\\+?|prime video|amazon prime|microsoft|msbill\\.info|office 365|chatgpt plus"
     )
 
     fun suggest(transaction: FinanceTransaction): TransactionCategory {
@@ -39,21 +43,31 @@ object FinanceCategories {
                 listOf("føtex", "rema 1000", "sunu.dk", "supermarkt", "supermarket", "bageriet")
                     .any { it in text } || transaction.merchant.equals("Mad", ignoreCase = true) -> TransactionCategory.Groceries
             drugstorePattern.containsMatchIn(text) -> TransactionCategory.Drugstore
-            transaction.category == "Transport" || listOf("wiener linien", "öbb", "dsb", "parking", "tankstelle", "uber", "bolt")
+            transaction.category == "Transport" || listOf("wiener linien", "öbb", "oebb", "dsb", "parking", "tankstelle", "uber", "bolt")
                 .any { it in text } -> TransactionCategory.Mobility
             monthlySubscriptionPattern.containsMatchIn(text) ||
                 transaction.merchant.equals("TV", ignoreCase = true) -> TransactionCategory.Subscriptions
-            transaction.category == "Shopping" || listOf("lookfantastic", "viori", "amazon", "zalando")
+            restaurantPattern.containsMatchIn(text) -> TransactionCategory.Restaurants
+            transaction.category == "Shopping" || listOf("lookfantastic", "viori", "amazon", "zalando", "aliexpress", "thalia", "trafik", "m & s")
                 .any { it in text } -> TransactionCategory.Shopping
             listOf("optik", "apotheke", "pharmacy", "arzt", "doctor", "dentist")
                 .any { it in text } -> TransactionCategory.Health
-            transaction.category == "Freizeit" || listOf("restaurant", "café", "kino", "cinema", "burger king", "mcdonald")
+            transaction.category == "Freizeit" || listOf("kino", "cinema", "steamgames", "steam purchase", "g2a.com")
                 .any { it in text } -> TransactionCategory.Leisure
+            listOf("bargeldbehebung", "bankomat", "atm ").any { it in text } -> TransactionCategory.Cash
+            "kest" in text -> TransactionCategory.Taxes
             else -> TransactionCategory.Other
         }
     }
 
-    fun senderKey(merchant: String): String = merchant.lowercase(Locale.ROOT)
+    fun displaySender(merchant: String): String = merchant
+        .replace(Regex("(?iu)^(?:echtzeitgutschrift|gutschrift)\\s+a(?:/|\\s)+"), "")
+        .replace(Regex("(?iu)\\s+(?:AT\\d{18}|ref:).*$"), "")
+        .trim()
+        .ifBlank { merchant }
+
+    fun senderKey(merchant: String): String = displaySender(merchant).lowercase(Locale.ROOT)
+        .replace(Regex("\\s+at\\s+ref.*$"), "")
         .replace(Regex("\\d+"), " ")
         .replace(Regex("[^\\p{L}]+"), " ")
         .trim()
@@ -65,13 +79,26 @@ object FinanceCategories {
             "microsoft" in value -> "Microsoft"
             "spotify" in value -> "Spotify"
             "netflix" in value -> "Netflix"
+            "steam" in value -> "Steam"
+            "g2a.com" in value -> "G2A"
+            "mcdonald" in value -> "McDonald's"
+            "burger king" in value -> "Burger King"
+            Regex("(?iu)(?<!\\p{L})kfc(?!\\p{L})").containsMatchIn(value) -> "KFC"
+            "lieferando" in value -> "Lieferando"
+            "mevlana kebap" in value -> "Mevlana Kebap"
+            "cafe+co" in value -> "Cafe+Co"
+            "oebb" in value || "öbb" in value -> "ÖBB"
+            "aliexpress" in value -> "AliExpress"
+            "thalia" in value -> "Thalia"
+            "hofer" in value -> "HOFER"
             Regex("(?iu)(?<!\\p{L})bipa(?!\\p{L})").containsMatchIn(value) -> "BIPA"
             Regex("(?iu)(?<!\\p{L})dm(?!\\p{L})").containsMatchIn(value) -> "dm"
             Regex("(?iu)(?<!\\p{L})billa(?!\\p{L})").containsMatchIn(value) -> "BILLA"
-            Regex("(?iu)(?<!\\p{L})interspar(?!\\p{L})").containsMatchIn(value) -> "INTERSPAR"
+            Regex("(?iu)(?<!\\p{L})(?:interspar|intersp\\.?)(?!\\p{L})").containsMatchIn(value) -> "INTERSPAR"
             Regex("(?iu)(?<!\\p{L})spar(?!\\p{L})").containsMatchIn(value) -> "SPAR"
             Regex("(?iu)(?<!\\p{L})penny(?!\\p{L})").containsMatchIn(value) -> "PENNY"
-            else -> merchant
+            "bargeldbehebung" in value -> "Bargeldbehebung"
+            else -> merchant.take(48).trim()
         }
     }
 
@@ -99,34 +126,7 @@ object FinanceCategories {
             transaction.copy(category = category.label)
         }
 
-        val recurringSubscriptionIds = categorized
-            .filter { it.amountCents < 0 && it.category in setOf(TransactionCategory.Other.label, TransactionCategory.Shopping.label) }
-            .groupBy { recurringMerchantKey(it.merchant) }
-            .filterKeys { it.length >= 3 }
-            .values
-            .flatMap { sameMerchant ->
-                sameMerchant.groupBy { -it.amountCents }.values
-                    .filter(::occursMonthly)
-                    .flatten()
-                    .map { it.identity }
-            }
-            .toSet()
-
-        return overview.copy(transactions = categorized.map { transaction ->
-            if (transaction.identity in recurringSubscriptionIds && transaction.identity !in overrides) {
-                transaction.copy(category = TransactionCategory.Subscriptions.label)
-            } else {
-                transaction
-            }
-        })
-    }
-
-    private fun occursMonthly(transactions: List<FinanceTransaction>): Boolean {
-        val dates = transactions.mapNotNull { transaction ->
-            transaction.bookingDate?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
-        }.sorted()
-        if (dates.map { YearMonth.from(it) }.distinct().size < 2) return false
-        return dates.zipWithNext().any { (first, second) -> ChronoUnit.DAYS.between(first, second) in 24..38 }
+        return overview.copy(transactions = categorized)
     }
 
     fun choices(transaction: FinanceTransaction): List<TransactionCategory> =
@@ -150,13 +150,30 @@ class CategoryOverrideStore(context: Context) {
         }.apply()
     }
 
-    fun loadParentSenders(): Set<String> = parentPreferences.all.keys
+    fun loadParentSenders(): Set<String> = parentPreferences.all.keys.map(FinanceCategories::senderKey).toSet()
 
     fun saveParentSender(merchant: String, enabled: Boolean) {
         val key = FinanceCategories.senderKey(merchant)
         if (key.isBlank()) return
         parentPreferences.edit().apply {
+            parentPreferences.all.keys.filter { FinanceCategories.senderKey(it) == key }.forEach { remove(it) }
             if (enabled) putBoolean(key, true) else remove(key)
+        }.apply()
+    }
+}
+
+class RecurringVisibilityStore(context: Context) {
+    private val preferences = context.getSharedPreferences("saldo_recurring_hidden_v1", Context.MODE_PRIVATE)
+
+    fun load(): Set<String> = preferences.all.keys
+
+    fun hide(key: String) {
+        preferences.edit().putBoolean(key, true).apply()
+    }
+
+    fun restore(prefix: String) {
+        preferences.edit().apply {
+            preferences.all.keys.filter { it.startsWith(prefix) }.forEach { remove(it) }
         }.apply()
     }
 }

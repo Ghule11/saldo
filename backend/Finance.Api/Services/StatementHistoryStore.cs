@@ -69,14 +69,15 @@ public sealed class StatementHistoryStore
             var cents = amount * 100m;
             if (cents != decimal.Truncate(cents)) throw new FormatException("Ein Betrag hat mehr als zwei Nachkommastellen.");
             var amountCents = checked((long)cents);
-            var detail = Regex.Replace(Field("Buchungstext"), @"\s+", " ").Trim();
+            var rawText = Field("Buchungstext");
+            var detail = Regex.Replace(rawText, @"\s+", " ").Trim();
             var purpose = Regex.Replace(Field("Verwendungszweck"), @"\s+", " ").Trim();
             if (!string.IsNullOrWhiteSpace(purpose) && !detail.Contains(purpose, StringComparison.OrdinalIgnoreCase))
             {
                 detail = $"{detail} · {purpose}";
             }
             var namedParty = amountCents >= 0 ? Field("Auftraggebername") : Field("Empfängername");
-            var merchant = string.IsNullOrWhiteSpace(namedParty) ? detail : namedParty;
+            var merchant = string.IsNullOrWhiteSpace(namedParty) ? ExtractMerchant(rawText, amountCents) : namedParty;
             if (string.IsNullOrWhiteSpace(merchant)) merchant = "Umsatz";
 
             var baseKey = $"{date:yyyy-MM-dd}\u001f{amountCents}\u001f{detail}\u001f{namedParty}";
@@ -120,6 +121,37 @@ public sealed class StatementHistoryStore
             _logger.LogWarning(exception, "The local statement history could not be read.");
             return null;
         }
+    }
+
+    private static string ExtractMerchant(string rawText, long amountCents)
+    {
+        if (amountCents > 0)
+        {
+            if (Regex.IsMatch(rawText, @"(?i)^\s*Einzahlung\s+Automat\b")) return "Bareinzahlung";
+            var sender = Regex.Match(rawText,
+                @"(?i)^\s*(?:Echtzeitgutschrift|Gutschrift)\s+a/\s*(.+?)(?:\s{2,}|\s+AT\d{18}\b|$)");
+            if (sender.Success) return sender.Groups[1].Value.Trim();
+        }
+        else
+        {
+            var recipient = Regex.Match(rawText,
+                @"(?i)^\s*(?:Echtzeitüberweisung|Überweisung)\s+zG/\s*(.+?)(?:\s+\d{2}\.\d{2}/\d{2}:\d{2}|\s+Ref:|$)");
+            if (recipient.Success) return recipient.Groups[1].Value.Trim();
+        }
+
+        if (Regex.IsMatch(rawText, @"(?i)^\s*ATM\b")) return "Bargeldbehebung";
+
+        var cardPayment = Regex.Match(rawText,
+            @"(?is)^\s*(?:POS|E-COMM)\b.*?\bO\s{2,}(.+)$");
+        if (cardPayment.Success)
+        {
+            return Regex.Split(cardPayment.Groups[1].Value.Trim(), @"\s{2,}")[0].Trim();
+        }
+
+        var terminal = Regex.Match(rawText, @"(?is)^\s*(.*?)\s+[DK]\d{2}\s+");
+        var name = terminal.Success ? terminal.Groups[1].Value : rawText;
+        name = Regex.Replace(name.Trim(), @"\s+\d{3,}$", "");
+        return Regex.Replace(name, @"\s+", " ").Trim();
     }
 }
 

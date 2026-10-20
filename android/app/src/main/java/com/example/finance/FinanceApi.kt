@@ -88,7 +88,8 @@ object FinanceApi {
             val amount = item.getLong("amountCents")
             val merchant = item.getString("merchant")
             FinanceTransaction(
-                merchant = if (amount < 0) FinanceCategories.displayMerchant(merchant) else merchant,
+                merchant = if (amount < 0) FinanceCategories.displayMerchant(merchant)
+                    else FinanceCategories.displaySender(merchant),
                 detail = item.getString("detail"),
                 dateLabel = item.getString("bookingDate").toGermanDate(),
                 amountCents = amount,
@@ -238,7 +239,8 @@ object FinanceApi {
                     .replace(Regex("[()]+$"), "")
                     .replace(Regex("\\s+\\d{4,}$"), "")
                     .trim()
-                val readableMerchant = if (signedAmount < 0) FinanceCategories.displayMerchant(displayMerchant) else displayMerchant
+                val readableMerchant = if (signedAmount < 0) FinanceCategories.displayMerchant(displayMerchant)
+                    else FinanceCategories.displaySender(displayMerchant)
 
                 FinanceTransaction(
                     merchant = readableMerchant.ifBlank { "Umsatz" },
