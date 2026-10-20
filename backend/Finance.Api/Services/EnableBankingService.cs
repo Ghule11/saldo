@@ -44,13 +44,21 @@ public sealed class EnableBankingService(
     {
         if (!IsConfigured)
         {
-            return new BankingStatus(false, _mode == "SANDBOX", _mode, null, null, 0, false);
+            return new BankingStatus(false, _mode == "SANDBOX", _mode, null, null, 0, false, null);
+        }
+
+        var connected = sessionStore.GetConnectedSession(_mode);
+        var retryAfter = dataCache.GetRateLimitedUntil(_mode);
+        if (retryAfter is not null && connected is not null)
+        {
+            return new BankingStatus(true, _mode == "SANDBOX", _mode,
+                connected.InstitutionName, connected.InstitutionCountry,
+                connected.AccountUids.Count, true, retryAfter);
         }
 
         var application = await GetApplicationAsync(cancellationToken);
         EnsureExpectedEnvironment(application);
         var isSandbox = _mode == "SANDBOX";
-        var connected = sessionStore.GetConnectedSession(_mode);
 
         return new BankingStatus(
             IsConfigured,
@@ -59,7 +67,8 @@ public sealed class EnableBankingService(
             connected?.InstitutionName,
             connected?.InstitutionCountry,
             connected?.AccountUids.Count ?? 0,
-            application.Active);
+            application.Active,
+            retryAfter);
     }
 
     public async Task<IReadOnlyList<EnableBankingInstitution>> GetInstitutionsAsync(
@@ -83,14 +92,13 @@ public sealed class EnableBankingService(
 
     public async Task<BankingAccountDataResponse> GetAccountDataAsync(
         CancellationToken cancellationToken,
-        bool allTransactions = false)
+        bool allTransactions = false,
+        string? psuUserAgent = null)
     {
-        await EnsureActiveApplicationAsync(cancellationToken);
-
+        EnsureConfigured();
         var connected = sessionStore.GetConnectedSession(_mode)
             ?? throw new InvalidOperationException("Zuerst ein Konto verbinden.");
         var cached = dataCache.Get(_mode, connected.SessionId, allTransactions);
-        // These requests have no PSU headers and are subject to background-fetch limits at many banks.
         if (cached is not null && DateTimeOffset.UtcNow - cached.FetchedAt < TimeSpan.FromHours(12))
         {
             return cached;
@@ -104,6 +112,8 @@ public sealed class EnableBankingService(
             throw new EnableBankingApiException(429, "ASPSP_RATE_LIMIT_EXCEEDED");
         }
 
+        await EnsureActiveApplicationAsync(cancellationToken);
+
         try
         {
             var accounts = new List<BankingAccountData>();
@@ -114,9 +124,11 @@ public sealed class EnableBankingService(
                     HttpMethod.Get,
                     $"/accounts/{encodedAccountUid}/balances",
                     null,
-                    cancellationToken);
+                    cancellationToken,
+                    psuUserAgent);
                 var transactionPath = $"/accounts/{encodedAccountUid}/transactions";
-                var transactions = await SendAsync<JsonElement>(HttpMethod.Get, transactionPath, null, cancellationToken);
+                var transactions = await SendAsync<JsonElement>(HttpMethod.Get, transactionPath, null, cancellationToken,
+                    psuUserAgent);
 
                 if (allTransactions)
                 {
@@ -150,7 +162,8 @@ public sealed class EnableBankingService(
                             HttpMethod.Get,
                             $"{transactionPath}?continuation_key={Uri.EscapeDataString(continuationKey)}",
                             null,
-                            cancellationToken);
+                            cancellationToken,
+                            psuUserAgent);
                     }
                 }
 
@@ -328,11 +341,17 @@ public sealed class EnableBankingService(
         HttpMethod method,
         string path,
         object? body,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? psuUserAgent = null)
     {
         using var request = new HttpRequestMessage(method, $"{ApiBaseUrl}{path}");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", CreateJwt());
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        if (!string.IsNullOrWhiteSpace(psuUserAgent) && psuUserAgent.Length <= 256 &&
+            !psuUserAgent.Any(char.IsControl))
+        {
+            request.Headers.Add("Psu-User-Agent", psuUserAgent);
+        }
 
         if (body is not null)
         {
@@ -481,7 +500,8 @@ public sealed record BankingStatus(
     string? InstitutionName,
     string? InstitutionCountry,
     int AccountCount,
-    bool IsActive);
+    bool IsActive,
+    DateTimeOffset? RetryAfter);
 public sealed record BankingAccountDataResponse(
     string InstitutionName,
     string InstitutionCountry,
@@ -517,6 +537,7 @@ public sealed record EnableBankingInstitution(
     [property: JsonPropertyName("name")] string Name,
     [property: JsonPropertyName("country")] string Country,
     [property: JsonPropertyName("maximum_consent_validity")] long MaximumConsentValidity,
+    [property: JsonPropertyName("required_psu_headers")] IReadOnlyList<string>? RequiredPsuHeaders,
     [property: JsonPropertyName("sandbox")] JsonElement? Sandbox);
 
 public sealed record EnableBankingApplication(

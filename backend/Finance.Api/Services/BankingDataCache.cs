@@ -42,10 +42,16 @@ public sealed class BankingDataCache
         }
     }
 
-    public bool IsRateLimited(string environment)
+    public DateTimeOffset? GetRateLimitedUntil(string environment)
     {
-        lock (_sync) return _rateLimitedUntil.TryGetValue(environment, out var until) && DateTimeOffset.UtcNow < until;
+        lock (_sync)
+        {
+            return _rateLimitedUntil.TryGetValue(environment, out var until) && DateTimeOffset.UtcNow < until
+                ? until : null;
+        }
     }
+
+    public bool IsRateLimited(string environment) => GetRateLimitedUntil(environment) is not null;
 
     public void MarkRateLimited(string environment)
     {

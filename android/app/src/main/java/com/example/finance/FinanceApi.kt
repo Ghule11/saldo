@@ -50,7 +50,8 @@ data class BankingConnectionStatus(
     val isConfigured: Boolean,
     val isActive: Boolean,
     val accountCount: Int,
-    val institutionName: String?
+    val institutionName: String?,
+    val retryAfter: String?
 )
 
 object FinanceApi {
@@ -67,13 +68,16 @@ object FinanceApi {
             isConfigured = status.optBoolean("isConfigured"),
             isActive = status.optBoolean("isActive"),
             accountCount = status.optInt("accountCount"),
-            institutionName = status.optString("institutionName").cleanValue()
+            institutionName = status.optString("institutionName").cleanValue(),
+            retryAfter = status.optString("retryAfter").cleanValue()
         )
     }
 
     fun fetchDashboardOverview(status: BankingConnectionStatus): FinanceOverview {
         if (status.accountCount > 0) {
-            return getJson("/api/banking/data?allTransactions=true")
+            val path = if (status.environment == "SANDBOX")
+                "/api/banking/data?allTransactions=true" else "/api/banking/data"
+            return getJson(path)
                 .toBankingOverview(status.environment == "SANDBOX")
         }
         return fetchOverview()
@@ -140,6 +144,9 @@ object FinanceApi {
             connection.connectTimeout = TIMEOUT_MILLIS
             connection.readTimeout = TIMEOUT_MILLIS
             connection.setRequestProperty("Accept", "application/json")
+            if (path.startsWith("/api/banking/data")) {
+                connection.setRequestProperty("Psu-User-Agent", "Saldo/1.0 (Android)")
+            }
 
             val status = connection.responseCode
             if (status !in 200..299) {

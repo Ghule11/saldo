@@ -85,6 +85,7 @@ app.MapGet("/api/banking/status", async (EnableBankingService banking, Cancellat
 
 app.MapGet("/api/banking/data", async (
     bool? allTransactions,
+    HttpContext context,
     EnableBankingService banking,
     CancellationToken cancellationToken) =>
 {
@@ -92,7 +93,8 @@ app.MapGet("/api/banking/data", async (
     {
         return Results.Ok(await banking.GetAccountDataAsync(
             cancellationToken,
-            allTransactions == true));
+            allTransactions == true,
+            context.Request.Headers["Psu-User-Agent"].ToString()));
     }
     catch (EnableBankingApiException exception)
     {

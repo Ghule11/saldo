@@ -86,6 +86,7 @@ private val Ink = Color(0xFFF6F2FF)
 private val Muted = Color(0xFFADA4BA)
 private val Green = Color(0xFF4EE3A1)
 private val Red = Color(0xFFFF708B)
+private val BankTimeZone = ZoneId.of("Europe/Vienna")
 
 private enum class AppTab(val title: String, val mark: String) {
     Overview("Übersicht", "⌂"),
@@ -168,7 +169,16 @@ private fun FinanceApp() {
                 FinanceApi.mergeImportedHistory(bank, importedHistory)
             } catch (exception: Exception) {
                 if (status.environment != "PRODUCTION") throw exception
-                errorMessage = "Bankdaten konnten nicht geladen werden: ${exception.message ?: "Verbindung abgelaufen"}"
+                val currentStatus = withContext(Dispatchers.IO) {
+                    runCatching { FinanceApi.fetchBankingStatus() }.getOrNull()
+                } ?: status
+                bankingStatus = currentStatus
+                val retryAt = currentStatus.retryAfter.toLocalBankTime()
+                errorMessage = if (retryAt != null) {
+                    "Bankabruf bis $retryAt pausiert. Deine importierten Umsätze bleiben verfügbar."
+                } else {
+                    "Bankdaten konnten nicht geladen werden: ${exception.message ?: "Verbindung abgelaufen"}"
+                }
                 overview?.takeIf { it.dataSource == "banking_production" }
                     ?.copy(isCached = true)
                     ?.let { FinanceApi.mergeImportedHistory(it, importedHistory) }
@@ -480,7 +490,11 @@ private fun AccountScreen(
             ActionButton(if (isLoading) "Wird geprüft …" else "Daten prüfen", onRefresh, !isLoading)
         }
         if (bankingStatus?.environment == "PRODUCTION") item {
-            EmptyNote("Bank Austria begrenzt Datenabrufe. Saldo fragt höchstens etwa zweimal täglich neu ab; die importierten Umsätze bleiben verfügbar.")
+            val retryAt = bankingStatus.retryAfter.toLocalBankTime()
+            EmptyNote(if (retryAt == null)
+                "Saldo nutzt gespeicherte Bankdaten und fragt nur bei Bedarf neu ab. Die importierten Umsätze bleiben verfügbar."
+            else
+                "Bankabruf bis $retryAt pausiert. Das Konto ist verbunden; eine erneute Freigabe ist dafür nicht nötig.")
         }
         if (bankingStatus?.environment == "PRODUCTION") {
             item {
@@ -488,7 +502,8 @@ private fun AccountScreen(
                     if (isConnecting) "Verbindung wird gestartet …" else
                         if (bankingStatus.accountCount > 0) "Bank Austria erneut verbinden" else "Bank Austria verbinden",
                     onConnect,
-                    !isConnecting && bankingStatus.isConfigured && bankingStatus.isActive
+                    !isConnecting && bankingStatus.isConfigured && bankingStatus.isActive &&
+                        bankingStatus.retryAfter.toLocalBankTime() == null
                 )
             }
             if (!bankingStatus.isConfigured) item {
@@ -498,13 +513,23 @@ private fun AccountScreen(
                 EmptyNote("Verknüpfe dein Konto zuerst bei Enable Banking mit der Production-Anwendung.")
             }
         }
-        if (errorMessage != null) item { EmptyNote(errorMessage) }
+        if (errorMessage != null && !errorMessage.startsWith("Bankabruf bis")) item { EmptyNote(errorMessage) }
         if (connectError != null) item { EmptyNote(connectError) }
         if (connectNotice != null) item { EmptyNote(connectNotice) }
         if (data.dataSource == "banking_sandbox") item {
             EmptyNote("Die verbundenen Testdaten stammen aus einer Sandbox und sind keine echten Bankumsätze.")
         }
     }
+}
+
+private fun String?.toLocalBankTime(): String? = this?.let { value ->
+    runCatching {
+        val time = OffsetDateTime.parse(value)
+        if (time.isAfter(OffsetDateTime.now())) {
+            time.atZoneSameInstant(BankTimeZone)
+                .format(DateTimeFormatter.ofPattern("dd.MM. HH:mm", Locale.GERMANY))
+        } else null
+    }.getOrNull()
 }
 
 @Composable
@@ -527,7 +552,7 @@ private fun DataSourceBanner(data: FinanceOverview) {
         Spacer(Modifier.width(10.dp))
         val fetchedAt = data.fetchedAt?.let { value ->
             runCatching {
-                OffsetDateTime.parse(value).atZoneSameInstant(ZoneId.systemDefault())
+                OffsetDateTime.parse(value).atZoneSameInstant(BankTimeZone)
                     .format(DateTimeFormatter.ofPattern("dd.MM. HH:mm", Locale.GERMANY))
             }.getOrNull()
         }
