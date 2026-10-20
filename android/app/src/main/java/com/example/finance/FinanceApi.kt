@@ -24,7 +24,9 @@ data class FinanceOverview(
     val transactions: List<FinanceTransaction>,
     val hasMoreTransactions: Boolean = false,
     val fetchedAt: String? = null,
-    val isCached: Boolean = false
+    val isCached: Boolean = false,
+    val balanceAvailable: Boolean = true,
+    val hasImportedHistory: Boolean = false
 )
 
 data class SpendingCategory(
@@ -69,12 +71,57 @@ object FinanceApi {
         )
     }
 
-    fun fetchDashboardOverview(status: BankingConnectionStatus, forceRefresh: Boolean = false): FinanceOverview {
+    fun fetchDashboardOverview(status: BankingConnectionStatus): FinanceOverview {
         if (status.accountCount > 0) {
-            return getJson("/api/banking/data?allTransactions=true&forceRefresh=$forceRefresh")
+            return getJson("/api/banking/data?allTransactions=true")
                 .toBankingOverview(status.environment == "SANDBOX")
         }
         return fetchOverview()
+    }
+
+    fun fetchImportedHistory(): FinanceOverview? {
+        val response = getJson("/api/history")
+        val items = response.optJSONArray("transactions") ?: return null
+        if (items.length() == 0) return null
+        val transactions = (0 until items.length()).mapNotNull { index ->
+            val item = items.optJSONObject(index) ?: return@mapNotNull null
+            val amount = item.getLong("amountCents")
+            val merchant = item.getString("merchant")
+            FinanceTransaction(
+                merchant = if (amount < 0) FinanceCategories.displayMerchant(merchant) else merchant,
+                detail = item.getString("detail"),
+                dateLabel = item.getString("bookingDate").toGermanDate(),
+                amountCents = amount,
+                category = if (amount > 0) "Eingang" else "Ausgang",
+                bookingDate = item.getString("bookingDate"),
+                identity = item.getString("identity")
+            )
+        }
+        return FinanceOverview(
+            dataSource = "local_statement",
+            month = "Importierte Umsätze",
+            accountInstitution = "Bank Austria",
+            accountName = "Umsatzliste",
+            currency = response.optString("currency", "EUR"),
+            balanceCents = 0,
+            incomeCents = 0,
+            expensesCents = 0,
+            spending = emptyList(),
+            transactions = transactions,
+            balanceAvailable = false,
+            hasImportedHistory = true
+        )
+    }
+
+    fun mergeImportedHistory(bank: FinanceOverview, history: FinanceOverview?): FinanceOverview {
+        if (history == null || bank.dataSource != "banking_production") return bank
+        val bankTransactions = bank.transactions.filterNot { it.identity.startsWith("statement:") }
+        val oldestBankDate = bankTransactions.mapNotNull { it.bookingDate }.minOrNull()
+        val older = history.transactions.filter { oldestBankDate == null || it.bookingDate.orEmpty() < oldestBankDate }
+        return bank.copy(
+            transactions = bankTransactions + older,
+            hasImportedHistory = older.isNotEmpty()
+        )
     }
 
     fun startBankAustriaAuthorization() {
@@ -236,7 +283,8 @@ object FinanceApi {
             transactions = transactions,
             hasMoreTransactions = !continuationKey.isNullOrBlank() && continuationKey != "null",
             fetchedAt = optString("fetchedAt").cleanValue(),
-            isCached = optBoolean("isCached")
+            isCached = optBoolean("isCached"),
+            balanceAvailable = balanceAmount != null
         )
     }
 

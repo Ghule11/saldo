@@ -25,6 +25,8 @@ The app and backend support Bank Austria account authorization through a separat
 
 Successful bank responses are encrypted in a local backend cache to reduce repeat requests. A temporary provider rate limit shows the last saved bank response if one exists, or a clear retry message; it never substitutes sample transactions for production bank data.
 
+Older Bank Austria transactions can be imported once from a 24You CSV export with the local backend command described in [`docs/statement-import.md`](docs/statement-import.md). The import is encrypted outside the repository. When the bank temporarily rejects data requests, Saldo still shows imported transactions and clearly marks the current balance as unavailable. When bank data becomes available, transactions older than the oldest API transaction are added to the live view without duplicating the overlap. Background bank requests are limited to about twice a day.
+
 ## Run locally
 
 - Start the backend project in `backend/Finance.Api/` with its `https` launch profile (ports `7129` for the desktop callback and `5006` for the emulator API). A locally trusted development certificate for `localhost` is required.

@@ -142,19 +142,36 @@ private fun FinanceApp() {
     LaunchedEffect(reloadKey) {
         isLoading = true
         errorMessage = null
+        val importedHistory = withContext(Dispatchers.IO) {
+            runCatching { FinanceApi.fetchImportedHistory() }.getOrNull()
+        }
         try {
             val status = withContext(Dispatchers.IO) { FinanceApi.fetchBankingStatus() }
             bankingStatus = status
-            overview = try {
-                withContext(Dispatchers.IO) { FinanceApi.fetchDashboardOverview(status, reloadKey > 0) }
+            overview = if (status.environment == "PRODUCTION" && status.accountCount == 0) {
+                errorMessage = "Bank Austria ist derzeit nicht verbunden. Die importierten Umsätze bleiben verfügbar."
+                importedHistory
+            } else try {
+                val bank = withContext(Dispatchers.IO) { FinanceApi.fetchDashboardOverview(status) }
+                FinanceApi.mergeImportedHistory(bank, importedHistory)
             } catch (exception: Exception) {
                 if (status.environment != "PRODUCTION") throw exception
                 errorMessage = "Bankdaten konnten nicht geladen werden: ${exception.message ?: "Verbindung abgelaufen"}"
-                overview?.takeIf { it.dataSource == "banking_production" }?.copy(isCached = true)
+                overview?.takeIf { it.dataSource == "banking_production" }
+                    ?.copy(isCached = true)
+                    ?.let { FinanceApi.mergeImportedHistory(it, importedHistory) }
+                    ?: importedHistory
             }
         } catch (_: Exception) {
-            errorMessage = "Die Finanzdaten konnten nicht geladen werden. Prüfe, ob Saldo auf dem Computer läuft."
-            overview = overview?.takeIf { it.dataSource == "banking_production" }?.copy(isCached = true)
+            errorMessage = if (importedHistory != null) {
+                "Der Bankstatus konnte nicht geprüft werden. Die importierten Umsätze sind weiterhin verfügbar."
+            } else {
+                "Die Finanzdaten konnten nicht geladen werden. Prüfe, ob Saldo auf dem Computer läuft."
+            }
+            overview = overview?.takeIf { it.dataSource == "banking_production" }
+                ?.copy(isCached = true)
+                ?.let { FinanceApi.mergeImportedHistory(it, importedHistory) }
+                ?: importedHistory
         } finally {
             isLoading = false
         }
@@ -422,7 +439,7 @@ private fun AccountScreen(
     ) {
         item { ScreenTitle("Konto", "Verbindung und Daten") }
         item { DataSourceBanner(data) }
-        if (bankingStatus?.environment != "PRODUCTION" || data.dataSource == "banking_production") {
+        if (data.dataSource != "sample" || bankingStatus?.environment != "PRODUCTION") {
             item { BalanceCard(data) }
             item {
                 PanelCard {
@@ -437,7 +454,10 @@ private fun AccountScreen(
             }
         }
         item {
-            ActionButton(if (isLoading) "Wird aktualisiert …" else "Daten aktualisieren", onRefresh, !isLoading)
+            ActionButton(if (isLoading) "Wird geprüft …" else "Daten prüfen", onRefresh, !isLoading)
+        }
+        if (bankingStatus?.environment == "PRODUCTION") item {
+            EmptyNote("Bank Austria begrenzt Datenabrufe. Saldo fragt höchstens etwa zweimal täglich neu ab; die importierten Umsätze bleiben verfügbar.")
         }
         if (bankingStatus?.environment == "PRODUCTION") {
             item {
@@ -490,8 +510,11 @@ private fun DataSourceBanner(data: FinanceOverview) {
         }
         val label = when {
             data.dataSource == "banking_sandbox" -> "Verbundenes Testkonto · Sandbox"
+            data.dataSource == "local_statement" -> "Importierte Umsätze · Bankabruf derzeit nicht verfügbar"
             data.dataSource == "banking_production" && data.isCached ->
                 if (fetchedAt == null) "Gespeicherte Bankdaten" else "Bankdaten · Stand $fetchedAt"
+            data.dataSource == "banking_production" && data.hasImportedHistory ->
+                "Bank Austria · mit importierter Historie"
             data.dataSource == "banking_production" -> "Verbundenes Bankkonto · Bank Austria"
             else -> "Beispieldaten"
         }
@@ -508,7 +531,13 @@ private fun BalanceCard(data: FinanceOverview) {
     ) {
         Text("KONTOSTAND", color = Color(0xFFD2BFF2), fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
         Spacer(Modifier.height(8.dp))
-        Text(formatCurrency(data.balanceCents, data.currency), color = Ink, fontSize = 32.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+        Text(
+            if (data.balanceAvailable) formatCurrency(data.balanceCents, data.currency) else "Aktuell nicht verfügbar",
+            color = Ink,
+            fontSize = if (data.balanceAvailable) 32.sp else 20.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1
+        )
         Spacer(Modifier.height(20.dp))
         Text("${data.accountInstitution} · ${data.accountName}", color = Color(0xFFD2BFF2), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }

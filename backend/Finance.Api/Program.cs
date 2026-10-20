@@ -26,9 +26,17 @@ if (OperatingSystem.IsWindows())
 builder.Services.AddOpenApi();
 builder.Services.AddSingleton<BankingSessionStore>();
 builder.Services.AddSingleton<BankingDataCache>();
+builder.Services.AddSingleton<StatementHistoryStore>();
 builder.Services.AddHttpClient<EnableBankingService>();
 
 var app = builder.Build();
+
+if (args.Length == 2 && args[0] == "--import-csv")
+{
+    var history = app.Services.GetRequiredService<StatementHistoryStore>().ImportCsv(args[1]);
+    Console.WriteLine($"Imported {history.Transactions.Count} transactions from {history.FirstBookingDate} to {history.LastBookingDate} into local encrypted storage.");
+    return;
+}
 
 if (app.Environment.IsDevelopment())
 {
@@ -46,6 +54,12 @@ app.MapGet("/api/health", () => Results.Ok(new
 app.MapGet("/api/overview", () => Results.Ok(SampleFinanceData.Overview))
     .WithName("GetOverview")
     .WithSummary("Returns the current finance overview from the configured sample data source.");
+
+app.MapGet("/api/history", (StatementHistoryStore statements) => statements.Get() is { } history
+        ? Results.Ok(history)
+        : Results.Ok(new { available = false }))
+    .WithName("GetImportedHistory")
+    .WithSummary("Returns locally imported statement transactions if available.");
 
 app.MapGet("/api/banking/status", async (EnableBankingService banking, CancellationToken cancellationToken) =>
 {
@@ -71,7 +85,6 @@ app.MapGet("/api/banking/status", async (EnableBankingService banking, Cancellat
 
 app.MapGet("/api/banking/data", async (
     bool? allTransactions,
-    bool? forceRefresh,
     EnableBankingService banking,
     CancellationToken cancellationToken) =>
 {
@@ -79,8 +92,7 @@ app.MapGet("/api/banking/data", async (
     {
         return Results.Ok(await banking.GetAccountDataAsync(
             cancellationToken,
-            allTransactions == true,
-            forceRefresh == true));
+            allTransactions == true));
     }
     catch (EnableBankingApiException exception)
     {

@@ -83,19 +83,19 @@ public sealed class EnableBankingService(
 
     public async Task<BankingAccountDataResponse> GetAccountDataAsync(
         CancellationToken cancellationToken,
-        bool allTransactions = false,
-        bool forceRefresh = false)
+        bool allTransactions = false)
     {
         await EnsureActiveApplicationAsync(cancellationToken);
 
         var connected = sessionStore.GetConnectedSession(_mode)
             ?? throw new InvalidOperationException("Zuerst ein Konto verbinden.");
         var cached = dataCache.Get(_mode, connected.SessionId, allTransactions);
-        if (!forceRefresh && cached is not null && DateTimeOffset.UtcNow - cached.FetchedAt < TimeSpan.FromMinutes(15))
+        // These requests have no PSU headers and are subject to background-fetch limits at many banks.
+        if (cached is not null && DateTimeOffset.UtcNow - cached.FetchedAt < TimeSpan.FromHours(12))
         {
             return cached;
         }
-        if (dataCache.IsRateLimited())
+        if (dataCache.IsRateLimited(_mode))
         {
             if (cached is not null && DateTimeOffset.UtcNow - cached.FetchedAt < TimeSpan.FromHours(24))
             {
@@ -168,7 +168,7 @@ public sealed class EnableBankingService(
         }
         catch (EnableBankingApiException exception) when (exception.StatusCode == 429)
         {
-            dataCache.MarkRateLimited();
+            dataCache.MarkRateLimited(_mode);
             if (cached is not null && DateTimeOffset.UtcNow - cached.FetchedAt < TimeSpan.FromHours(24))
             {
                 return cached;

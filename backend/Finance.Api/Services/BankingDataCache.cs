@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text.Json;
 using Microsoft.AspNetCore.DataProtection;
@@ -12,7 +13,7 @@ public sealed class BankingDataCache
     private readonly string _directory;
     private CachedBankingData? _production;
     private CachedBankingData? _sandbox;
-    private DateTimeOffset _rateLimitedUntil;
+    private readonly Dictionary<string, DateTimeOffset> _rateLimitedUntil = new();
 
     public BankingDataCache(IDataProtectionProvider dataProtectionProvider, ILogger<BankingDataCache> logger)
     {
@@ -22,6 +23,8 @@ public sealed class BankingDataCache
         Directory.CreateDirectory(_directory);
         _production = Load("PRODUCTION");
         _sandbox = Load("SANDBOX");
+        LoadRateLimit("PRODUCTION");
+        LoadRateLimit("SANDBOX");
     }
 
     public BankingAccountDataResponse? Get(string environment, string sessionId, bool requireCompleteHistory)
@@ -39,14 +42,44 @@ public sealed class BankingDataCache
         }
     }
 
-    public bool IsRateLimited()
+    public bool IsRateLimited(string environment)
     {
-        lock (_sync) return DateTimeOffset.UtcNow < _rateLimitedUntil;
+        lock (_sync) return _rateLimitedUntil.TryGetValue(environment, out var until) && DateTimeOffset.UtcNow < until;
     }
 
-    public void MarkRateLimited()
+    public void MarkRateLimited(string environment)
     {
-        lock (_sync) _rateLimitedUntil = DateTimeOffset.UtcNow.AddMinutes(5);
+        lock (_sync)
+        {
+            var until = DateTimeOffset.UtcNow.AddHours(6);
+            _rateLimitedUntil[environment] = until;
+            try
+            {
+                File.WriteAllText(RateLimitPath(environment), until.ToString("O", CultureInfo.InvariantCulture));
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                _logger.LogWarning(exception, "The banking rate limit pause could not be saved.");
+            }
+        }
+    }
+
+    private void LoadRateLimit(string environment)
+    {
+        try
+        {
+            var path = RateLimitPath(environment);
+            if (!File.Exists(path)) return;
+            if (DateTimeOffset.TryParse(File.ReadAllText(path), CultureInfo.InvariantCulture,
+                    DateTimeStyles.RoundtripKind, out var until))
+            {
+                _rateLimitedUntil[environment] = until;
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            _logger.LogWarning(exception, "The banking rate limit pause could not be read.");
+        }
     }
 
     public void Save(string environment, string sessionId, bool completeHistory, BankingAccountDataResponse data)
@@ -95,6 +128,10 @@ public sealed class BankingDataCache
     private string FilePath(string environment) => Path.Combine(
         _directory,
         environment == "PRODUCTION" ? "banking-production-data.bin" : "banking-sandbox-data.bin");
+
+    private string RateLimitPath(string environment) => Path.Combine(
+        _directory,
+        environment == "PRODUCTION" ? "banking-production-pause.txt" : "banking-sandbox-pause.txt");
 
     private sealed record CachedBankingData(string SessionId, bool CompleteHistory, BankingAccountDataResponse Data);
 }
