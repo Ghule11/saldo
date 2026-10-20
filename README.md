@@ -17,6 +17,8 @@ The backend exposes `GET /api/health` and `GET /api/overview`. The Android app f
 
 The planned provider is Enable Banking. Real bank access has not been implemented. Keep provider private keys, banking credentials, account data, and signing keys out of the Android app and Git; common key and certificate files are ignored locally.
 
+The backend includes a sandbox-only Enable Banking authorization flow. It does not yet replace the sample dashboard with provider balances or transactions. See [`docs/enable-banking-sandbox.md`](docs/enable-banking-sandbox.md) for local sandbox setup.
+
 ## Run locally
 
 - Start the backend project in `backend/Finance.Api/` with its `http` launch profile (port `5006`).
