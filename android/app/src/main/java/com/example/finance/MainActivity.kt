@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -55,6 +56,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -250,6 +252,7 @@ private fun FinanceApp() {
         FinanceCategories.apply(data, categoryOverrides, parentSenders, merchantRules, subscriptionDecisions)
     }
     val months = remember(categorized) { FinanceInsights.months(categorized) }
+    val screenStateHolder = rememberSaveableStateHolder()
     val detailTransaction = selectedTransaction?.let { selected ->
         categorized.transactions.firstOrNull { it.identity == selected.identity } ?: selected
     }
@@ -298,10 +301,11 @@ private fun FinanceApp() {
         } else when (selectedTab) {
             AppTab.Overview -> OverviewScreen(
                 categorized, months, hiddenRecurring, subscriptionDecisions, ::hideRecurring,
-                ::restoreRecurring, ::decideSubscription,
-                { selectedTransaction = it }, modifier
+                ::restoreRecurring, ::decideSubscription, modifier
             )
-            AppTab.Transactions -> TransactionsScreen(categorized, months, { selectedTransaction = it }, modifier)
+            AppTab.Transactions -> screenStateHolder.SaveableStateProvider("transactions") {
+                TransactionsScreen(categorized, months, { selectedTransaction = it }, modifier)
+            }
             AppTab.Analysis -> AnalysisScreen(categorized, months, modifier)
             AppTab.Account -> AccountScreen(
                 categorized, months, categoryOverrides.size + parentSenders.size + merchantRules.size,
@@ -404,7 +408,6 @@ private fun OverviewScreen(
     onHideRecurring: (String) -> Unit,
     onRestoreRecurring: (String) -> Unit,
     onSubscriptionDecision: (String, SubscriptionDecision) -> Unit,
-    onTransactionClick: (FinanceTransaction) -> Unit,
     modifier: Modifier
 ) {
     val current = months.firstOrNull()
@@ -413,7 +416,7 @@ private fun OverviewScreen(
         contentPadding = PaddingValues(20.dp),
         verticalArrangement = Arrangement.spacedBy(17.dp)
     ) {
-        item { ScreenTitle("Saldo", "Dein Geld im Blick") }
+        item { Text("Saldo", color = Ink, fontSize = 28.sp, fontWeight = FontWeight.Bold) }
         item { DataSourceBanner(data) }
         item { BalanceCard(data) }
         if (current != null) {
@@ -423,9 +426,6 @@ private fun OverviewScreen(
             item { RecurringIncomeCard(data, data.currency, hiddenRecurring, onHideRecurring, onRestoreRecurring) }
             item { SubscriptionsCard(data, data.currency, hiddenRecurring, subscriptionDecisions,
                 onSubscriptionDecision, onRestoreRecurring) }
-            item { MonthlyChart(months, data.currency) }
-            item { SectionHeading("Letzte Umsätze", current.label) }
-            items(current.transactions.take(4)) { TransactionRow(it, data.currency, onTransactionClick) }
         } else {
             item { EmptyNote("Für dieses Konto sind noch keine datierten Umsätze vorhanden.") }
         }
@@ -454,9 +454,11 @@ private fun TransactionsScreen(data: FinanceOverview, months: List<MonthlySnapsh
     val incomingCents = filtered.filter { it.amountCents > 0 }.sumOf { it.amountCents }
     val outgoingCents = filtered.filter { it.amountCents < 0 }.sumOf { -it.amountCents }
     val dayGroups = filtered.groupBy { it.bookingDate ?: it.dateLabel.ifBlank { "Ohne Datum" } }
+    val listState = rememberLazyListState()
 
     LazyColumn(
         modifier = modifier.fillMaxSize(),
+        state = listState,
         contentPadding = PaddingValues(20.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
@@ -507,14 +509,14 @@ private fun TransactionsScreen(data: FinanceOverview, months: List<MonthlySnapsh
             ) { showCategoryFilter = true }
         }
         item { SectionHeading("Bewegungen", "${filtered.size} ${if (filtered.size == 1) "Umsatz" else "Umsätze"}") }
-        if (filtered.isNotEmpty()) item {
+        if (incomingCents > 0 || outgoingCents > 0) item {
             PanelCard {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Column {
+                    if (incomingCents > 0) Column(Modifier.weight(1f)) {
                         Text("Eingänge im Filter", color = Muted, fontSize = 11.sp)
                         Text(formatCurrency(incomingCents, data.currency), color = Green, fontSize = 16.sp, fontWeight = FontWeight.Bold)
                     }
-                    Column(horizontalAlignment = Alignment.End) {
+                    if (outgoingCents > 0) Column(Modifier.weight(1f), horizontalAlignment = if (incomingCents > 0) Alignment.End else Alignment.Start) {
                         Text("Ausgaben im Filter", color = Muted, fontSize = 11.sp)
                         Text(formatCurrency(outgoingCents, data.currency), color = Red, fontSize = 16.sp, fontWeight = FontWeight.Bold)
                     }
@@ -863,20 +865,23 @@ private fun DataSourceBanner(data: FinanceOverview) {
 private fun BalanceCard(data: FinanceOverview) {
     Column(
         modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp))
-            .background(Brush.linearGradient(listOf(Color(0xFF3B245A), Color(0xFF21172F), Color(0xFF17131F))))
-            .padding(22.dp)
+            .background(Brush.linearGradient(listOf(Color(0xFF302044), Color(0xFF21182F), Color(0xFF181421))))
+            .padding(horizontal = 22.dp, vertical = 27.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text("KONTOSTAND", color = Color(0xFFD2BFF2), fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(12.dp))
         Text(
             if (data.balanceAvailable) formatCurrency(data.balanceCents, data.currency) else "Aktuell nicht verfügbar",
             color = Ink,
-            fontSize = if (data.balanceAvailable) 32.sp else 20.sp,
+            fontSize = if (data.balanceAvailable) 36.sp else 20.sp,
             fontWeight = FontWeight.Bold,
-            maxLines = 1
+            textAlign = TextAlign.Center,
+            maxLines = 1,
+            modifier = Modifier.fillMaxWidth()
         )
-        Spacer(Modifier.height(20.dp))
-        Text("${data.accountInstitution} · ${data.accountName}", color = Color(0xFFD2BFF2), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Spacer(Modifier.height(18.dp))
+        Box(Modifier.width(42.dp).height(3.dp).clip(CircleShape).background(Purple.copy(alpha = 0.8f)))
     }
 }
 
@@ -1017,22 +1022,12 @@ private fun SubscriptionsCard(
         SectionHeading("Abos", "${confirmed.size} bestätigt")
         if (confirmed.isNotEmpty()) {
             Spacer(Modifier.height(12.dp))
-            Text("Monatlich geschätzt: ${formatCurrency(confirmed.sumOf { it.amountCents }, currency)}",
-                color = Red, fontSize = 15.sp, fontWeight = FontWeight.Bold)
-            Text("Summe der letzten Beträge je bestätigtem Abo.", color = Muted, fontSize = 10.sp)
-            Spacer(Modifier.height(8.dp))
+            RecurringMonthlyTotal(confirmed.sumOf { it.amountCents }, currency, Red,
+                "Summe der letzten Beträge je bestätigtem Abo.")
+            Spacer(Modifier.height(10.dp))
             confirmed.forEach { entry ->
-                Row(Modifier.fillMaxWidth().padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text(entry.name, color = Ink, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                        Text("Zuletzt ${entry.lastDate}", color = Muted, fontSize = 10.sp)
-                    }
-                    Column(horizontalAlignment = Alignment.End) {
-                        Text(formatCurrency(entry.amountCents, currency), color = Red, fontSize = 12.sp)
-                        TextButton(onClick = {
-                            onDecision(entry.key.removePrefix("subscription:"), SubscriptionDecision.Rejected)
-                        }) { Text("Kein Abo", color = Muted, fontSize = 10.sp) }
-                    }
+                RecurringOverviewRow(entry, currency, Red, "Kein Abo") {
+                    onDecision(entry.key.removePrefix("subscription:"), SubscriptionDecision.Rejected)
                 }
             }
         }
@@ -1078,45 +1073,54 @@ private fun RecurringIncomeCard(
 ) {
     val income = remember(data) { FinanceInsights.recurringIncome(data) }
     if (income.isEmpty()) return
-    RecurringEntriesCard("Regelmäßige Eingänge", "Mindestens 2 Monate", "income:",
-        income, currency, Green, hidden, onHide, onRestore)
+    val visible = income.filterNot { it.key in hidden }.take(6)
+    val hasHidden = income.any { it.key in hidden }
+    PanelCard {
+        SectionHeading("Regelmäßige Eingänge", "${visible.size} erkannt")
+        if (visible.isNotEmpty()) {
+            Spacer(Modifier.height(12.dp))
+            RecurringMonthlyTotal(visible.sumOf { it.amountCents }, currency, Green,
+                "Summe der letzten Beträge je angezeigtem Eingang.")
+            Spacer(Modifier.height(10.dp))
+            visible.forEach { item ->
+                RecurringOverviewRow(item, currency, Green, "Entfernen") { onHide(item.key) }
+            }
+        } else {
+            Spacer(Modifier.height(12.dp))
+            Text("Alle Einträge ausgeblendet.", color = Muted, fontSize = 12.sp)
+        }
+        if (hasHidden) TextButton(onClick = { onRestore("income:") }) {
+            Text("Ausgeblendete wieder anzeigen", color = Purple, fontSize = 11.sp)
+        }
+    }
 }
 
 @Composable
-private fun RecurringEntriesCard(
-    title: String,
-    detail: String,
-    keyPrefix: String,
-    entries: List<RecurringEntry>,
+private fun RecurringMonthlyTotal(amountCents: Long, currency: String, accent: Color, explanation: String) {
+    Text("Monatlich geschätzt: ${formatCurrency(amountCents, currency)}",
+        color = accent, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+    Text(explanation, color = Muted, fontSize = 10.sp)
+}
+
+@Composable
+private fun RecurringOverviewRow(
+    entry: RecurringEntry,
     currency: String,
     accent: Color,
-    hidden: Set<String>,
-    onHide: (String) -> Unit,
-    onRestore: (String) -> Unit
+    actionLabel: String,
+    onAction: () -> Unit
 ) {
-    val visible = entries.filterNot { it.key in hidden }.take(6)
-    val hasHidden = entries.any { it.key in hidden }
-    PanelCard {
-        SectionHeading(title, detail)
-        Spacer(Modifier.height(12.dp))
-        if (visible.isEmpty()) Text("Alle Einträge ausgeblendet.", color = Muted, fontSize = 12.sp)
-        visible.forEach { item ->
-            Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                Column(Modifier.weight(1f)) {
-                    Text(item.name, color = Ink, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    Text("In ${item.monthCount} Monaten · zuletzt ${item.lastDate}", color = Muted, fontSize = 10.sp)
-                }
-                Spacer(Modifier.width(8.dp))
-                Column(horizontalAlignment = Alignment.End) {
-                    Text(formatCurrency(item.amountCents, currency), color = accent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                    TextButton(onClick = { onHide(item.key) }) {
-                        Text("Entfernen", color = Muted, fontSize = 10.sp)
-                    }
-                }
-            }
+    Row(Modifier.fillMaxWidth().padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(entry.name, color = Ink, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+                maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text("In ${entry.monthCount} Monaten · zuletzt ${entry.lastDate}", color = Muted, fontSize = 10.sp)
         }
-        if (hasHidden) TextButton(onClick = { onRestore(keyPrefix) }) {
-            Text("Ausgeblendete wieder anzeigen", color = Purple, fontSize = 11.sp)
+        Spacer(Modifier.width(8.dp))
+        Column(horizontalAlignment = Alignment.End) {
+            Text(formatCurrency(entry.amountCents, currency), color = accent,
+                fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            TextButton(onClick = onAction) { Text(actionLabel, color = Muted, fontSize = 10.sp) }
         }
     }
 }
