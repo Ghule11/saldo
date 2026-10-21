@@ -1,10 +1,13 @@
 using System.Collections.Concurrent;
+using System.Globalization;
+using System.Net;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.Extensions.Caching.Memory;
 
 namespace Finance.Api.Services;
 
@@ -12,9 +15,13 @@ public sealed class EnableBankingService(
     HttpClient httpClient,
     IConfiguration configuration,
     BankingSessionStore sessionStore,
-    BankingDataCache dataCache)
+    BankingDataCache dataCache,
+    StatementHistoryStore statementHistoryStore,
+    IMemoryCache memoryCache)
 {
     private const string ApiBaseUrl = "https://api.enablebanking.com";
+    private const string PublicIpUrl = "https://api.ipify.org";
+    private const int MaxProductionTransactionPages = 12;
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
@@ -93,29 +100,40 @@ public sealed class EnableBankingService(
     public async Task<BankingAccountDataResponse> GetAccountDataAsync(
         CancellationToken cancellationToken,
         bool allTransactions = false,
-        string? psuUserAgent = null)
+        string? psuUserAgent = null,
+        string? psuIpAddress = null)
     {
         EnsureConfigured();
         var connected = sessionStore.GetConnectedSession(_mode)
             ?? throw new InvalidOperationException("Zuerst ein Konto verbinden.");
-        var cached = dataCache.Get(_mode, connected.SessionId, allTransactions);
-        if (cached is not null && DateTimeOffset.UtcNow - cached.FetchedAt < TimeSpan.FromHours(12))
+        await dataCache.FetchGate.WaitAsync(cancellationToken);
+        try
         {
-            return cached;
-        }
-        if (dataCache.IsRateLimited(_mode))
-        {
-            if (cached is not null && DateTimeOffset.UtcNow - cached.FetchedAt < TimeSpan.FromHours(24))
+            var cached = dataCache.Get(_mode, connected.SessionId, allTransactions);
+            if (cached is not null && DateTimeOffset.UtcNow - cached.FetchedAt < TimeSpan.FromHours(12))
             {
                 return cached;
             }
-            throw new EnableBankingApiException(429, "ASPSP_RATE_LIMIT_EXCEEDED");
-        }
+            if (dataCache.IsRateLimited(_mode))
+            {
+                if (cached is not null && DateTimeOffset.UtcNow - cached.FetchedAt < TimeSpan.FromHours(24))
+                {
+                    return cached;
+                }
+                throw new EnableBankingApiException(429, "ASPSP_RATE_LIMIT_EXCEEDED");
+            }
 
-        await EnsureActiveApplicationAsync(cancellationToken);
+            await EnsureActiveApplicationAsync(cancellationToken);
+            if (_mode == "PRODUCTION" && !string.IsNullOrWhiteSpace(psuUserAgent) &&
+                !IPAddress.TryParse(psuIpAddress, out _))
+            {
+                psuIpAddress = await GetPublicIpAddressAsync(cancellationToken);
+            }
 
-        try
-        {
+            var overlapDate = !allTransactions && _mode == "PRODUCTION" &&
+                DateOnly.TryParseExact(statementHistoryStore.Get()?.LastBookingDate,
+                    "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var importedLastDate)
+                ? importedLastDate : (DateOnly?)null;
             var accounts = new List<BankingAccountData>();
             foreach (var accountUid in connected.AccountUids)
             {
@@ -125,46 +143,59 @@ public sealed class EnableBankingService(
                     $"/accounts/{encodedAccountUid}/balances",
                     null,
                     cancellationToken,
-                    psuUserAgent);
+                    psuUserAgent,
+                    psuIpAddress);
                 var transactionPath = $"/accounts/{encodedAccountUid}/transactions";
                 var transactions = await SendAsync<JsonElement>(HttpMethod.Get, transactionPath, null, cancellationToken,
-                    psuUserAgent);
-
-                if (allTransactions)
+                    psuUserAgent, psuIpAddress);
+                var collected = new List<JsonElement>();
+                var seenKeys = new HashSet<string>(StringComparer.Ordinal);
+                DateOnly? earliestBankDate = null;
+                var maxPages = allTransactions ? 100 : MaxProductionTransactionPages;
+                for (var page = 0; page < maxPages; page++)
                 {
-                    var collected = new List<JsonElement>();
-                    var seenKeys = new HashSet<string>(StringComparer.Ordinal);
-                    for (var page = 0; page < 100; page++)
+                    if (transactions.TryGetProperty("transactions", out var items) &&
+                        items.ValueKind == JsonValueKind.Array)
                     {
-                        if (transactions.TryGetProperty("transactions", out var items) && items.ValueKind == JsonValueKind.Array)
+                        foreach (var item in items.EnumerateArray())
                         {
-                            collected.AddRange(items.EnumerateArray());
-                        }
-
-                        var continuationKey = transactions.TryGetProperty("continuation_key", out var key)
-                            && key.ValueKind == JsonValueKind.String ? key.GetString() : null;
-                        if (string.IsNullOrWhiteSpace(continuationKey))
-                        {
-                            transactions = JsonSerializer.SerializeToElement(new
+                            collected.Add(item);
+                            if (item.TryGetProperty("booking_date", out var bookingDate) &&
+                                bookingDate.ValueKind == JsonValueKind.String &&
+                                DateOnly.TryParseExact(bookingDate.GetString(), "yyyy-MM-dd",
+                                    CultureInfo.InvariantCulture, DateTimeStyles.None, out var date) &&
+                                (earliestBankDate is null || date < earliestBankDate))
                             {
-                                transactions = collected,
-                                continuation_key = (string?)null
-                            });
-                            break;
+                                earliestBankDate = date;
+                            }
                         }
-
-                        if (!seenKeys.Add(continuationKey) || page == 99)
-                        {
-                            throw new InvalidOperationException("Die Umsätze konnten nicht vollständig geladen werden.");
-                        }
-
-                        transactions = await SendAsync<JsonElement>(
-                            HttpMethod.Get,
-                            $"{transactionPath}?continuation_key={Uri.EscapeDataString(continuationKey)}",
-                            null,
-                            cancellationToken,
-                            psuUserAgent);
                     }
+
+                    var continuationKey = transactions.TryGetProperty("continuation_key", out var key) &&
+                        key.ValueKind == JsonValueKind.String ? key.GetString() : null;
+                    if (string.IsNullOrWhiteSpace(continuationKey) ||
+                        (!allTransactions && (overlapDate is null || earliestBankDate < overlapDate)))
+                    {
+                        transactions = JsonSerializer.SerializeToElement(new
+                        {
+                            transactions = collected,
+                            continuation_key = continuationKey
+                        });
+                        break;
+                    }
+
+                    if (!seenKeys.Add(continuationKey) || page == maxPages - 1)
+                    {
+                        throw new InvalidOperationException("Die Umsätze konnten nicht vollständig geladen werden.");
+                    }
+
+                    transactions = await SendAsync<JsonElement>(
+                        HttpMethod.Get,
+                        $"{transactionPath}?continuation_key={Uri.EscapeDataString(continuationKey)}",
+                        null,
+                        cancellationToken,
+                        psuUserAgent,
+                        psuIpAddress);
                 }
 
                 accounts.Add(new BankingAccountData(balances, transactions));
@@ -179,14 +210,20 @@ public sealed class EnableBankingService(
             dataCache.Save(_mode, connected.SessionId, allTransactions, result);
             return result;
         }
-        catch (EnableBankingApiException exception) when (exception.StatusCode == 429)
+        catch (EnableBankingApiException exception) when (
+            exception.StatusCode == 429 && !dataCache.IsRateLimited(_mode))
         {
             dataCache.MarkRateLimited(_mode);
+            var cached = dataCache.Get(_mode, connected.SessionId, allTransactions);
             if (cached is not null && DateTimeOffset.UtcNow - cached.FetchedAt < TimeSpan.FromHours(24))
             {
                 return cached;
             }
             throw;
+        }
+        finally
+        {
+            dataCache.FetchGate.Release();
         }
     }
 
@@ -322,10 +359,48 @@ public sealed class EnableBankingService(
         }
     }
 
-    private Task<EnableBankingApplication> GetApplicationAsync(CancellationToken cancellationToken)
+    private async Task<EnableBankingApplication> GetApplicationAsync(CancellationToken cancellationToken)
     {
         EnsureConfigured();
-        return SendAsync<EnableBankingApplication>(HttpMethod.Get, "/application", null, cancellationToken);
+        var cacheKey = $"enable-banking-application:{_mode}";
+        if (memoryCache.TryGetValue<EnableBankingApplication>(cacheKey, out var cached) && cached is not null)
+        {
+            return cached;
+        }
+
+        var application = await SendAsync<EnableBankingApplication>(
+            HttpMethod.Get, "/application", null, cancellationToken);
+        if (application.Active)
+        {
+            memoryCache.Set(cacheKey, application, TimeSpan.FromMinutes(15));
+        }
+        return application;
+    }
+
+    private async Task<string> GetPublicIpAddressAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(5));
+            var value = (await httpClient.GetStringAsync(PublicIpUrl, timeout.Token)).Trim();
+            if (IPAddress.TryParse(value, out var address) &&
+                address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork &&
+                !IPAddress.IsLoopback(address))
+            {
+                return address.ToString();
+            }
+        }
+        catch (Exception exception) when (
+            !cancellationToken.IsCancellationRequested &&
+            exception is HttpRequestException or OperationCanceledException)
+        {
+            throw new InvalidOperationException(
+                "Die öffentliche IP-Adresse für den Bankabruf konnte nicht ermittelt werden.", exception);
+        }
+
+        throw new InvalidOperationException(
+            "Der Dienst zur Ermittlung der öffentlichen IP-Adresse hat keine gültige IPv4-Adresse geliefert.");
     }
 
     private void EnsureConfigured()
@@ -342,7 +417,8 @@ public sealed class EnableBankingService(
         string path,
         object? body,
         CancellationToken cancellationToken,
-        string? psuUserAgent = null)
+        string? psuUserAgent = null,
+        string? psuIpAddress = null)
     {
         using var request = new HttpRequestMessage(method, $"{ApiBaseUrl}{path}");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", CreateJwt());
@@ -351,6 +427,10 @@ public sealed class EnableBankingService(
             !psuUserAgent.Any(char.IsControl))
         {
             request.Headers.Add("Psu-User-Agent", psuUserAgent);
+        }
+        if (IPAddress.TryParse(psuIpAddress, out var parsedIp))
+        {
+            request.Headers.Add("Psu-Ip-Address", parsedIp.ToString());
         }
 
         if (body is not null)
@@ -365,7 +445,9 @@ public sealed class EnableBankingService(
         var content = await response.Content.ReadAsStringAsync(cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
-            throw new EnableBankingApiException((int)response.StatusCode, ReadProviderErrorCode(content));
+            var errorCode = ReadProviderErrorCode(content);
+            throw new EnableBankingApiException((int)response.StatusCode, errorCode,
+                errorCode == "PSU_HEADER_NOT_PROVIDED" ? ReadMissingPsuHeader(content) : null);
         }
 
         return JsonSerializer.Deserialize<TResponse>(content, JsonOptions)
@@ -408,6 +490,27 @@ public sealed class EnableBankingService(
         catch (JsonException)
         {
             return "PROVIDER_ERROR";
+        }
+    }
+
+    private static string? ReadMissingPsuHeader(string content)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(content);
+            if (!document.RootElement.TryGetProperty("detail", out var detail)) return null;
+            var flattened = new string(detail.ToString().Where(char.IsLetterOrDigit)
+                .Select(char.ToLowerInvariant).ToArray());
+            return new[]
+            {
+                "Psu-Ip-Address", "Psu-User-Agent", "Psu-Referer", "Psu-Accept-Charset",
+                "Psu-Accept-Encoding", "Psu-Accept-Language", "Psu-Accept", "Psu-Geo-Location"
+            }.FirstOrDefault(header => flattened.Contains(new string(header.Where(char.IsLetterOrDigit)
+                .Select(char.ToLowerInvariant).ToArray()), StringComparison.Ordinal));
+        }
+        catch (JsonException)
+        {
+            return null;
         }
     }
 
@@ -523,11 +626,14 @@ public sealed record ConnectedBankSession(
     string InstitutionCountry,
     IReadOnlyList<string> AccountUids);
 
-public sealed class EnableBankingApiException(int statusCode, string errorCode)
-    : Exception($"Enable Banking API antwortet mit HTTP {statusCode} ({errorCode}).")
+public sealed class EnableBankingApiException(int statusCode, string errorCode, string? missingPsuHeader = null)
+    : Exception(missingPsuHeader is null
+        ? $"Enable Banking API antwortet mit HTTP {statusCode} ({errorCode})."
+        : $"Enable Banking benötigt zusätzlich {missingPsuHeader}.")
 {
     public int StatusCode { get; } = statusCode;
     public string ErrorCode { get; } = errorCode;
+    public string? MissingPsuHeader { get; } = missingPsuHeader;
 }
 
 public sealed record EnableBankingInstitutionsResponse(

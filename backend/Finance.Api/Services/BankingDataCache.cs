@@ -8,6 +8,7 @@ namespace Finance.Api.Services;
 public sealed class BankingDataCache
 {
     private readonly object _sync = new();
+    public SemaphoreSlim FetchGate { get; } = new(1, 1);
     private readonly IDataProtector _protector;
     private readonly ILogger<BankingDataCache> _logger;
     private readonly string _directory;

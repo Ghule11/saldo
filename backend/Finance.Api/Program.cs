@@ -27,6 +27,7 @@ builder.Services.AddOpenApi();
 builder.Services.AddSingleton<BankingSessionStore>();
 builder.Services.AddSingleton<BankingDataCache>();
 builder.Services.AddSingleton<StatementHistoryStore>();
+builder.Services.AddMemoryCache();
 builder.Services.AddHttpClient<EnableBankingService>();
 
 var app = builder.Build();
@@ -94,7 +95,8 @@ app.MapGet("/api/banking/data", async (
         return Results.Ok(await banking.GetAccountDataAsync(
             cancellationToken,
             allTransactions == true,
-            context.Request.Headers["Psu-User-Agent"].ToString()));
+            context.Request.Headers["Psu-User-Agent"].ToString(),
+            context.Request.Headers["Psu-Ip-Address"].ToString()));
     }
     catch (EnableBankingApiException exception)
     {
@@ -107,7 +109,7 @@ app.MapGet("/api/banking/data", async (
     }
     catch (InvalidOperationException exception)
     {
-        return Results.Problem(exception.Message, statusCode: 409, title: "No bank account is connected");
+        return Results.Problem(exception.Message, statusCode: 409, title: "Bank data unavailable");
     }
     catch (CryptographicException)
     {
