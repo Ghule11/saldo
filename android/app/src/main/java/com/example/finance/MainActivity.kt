@@ -2,6 +2,7 @@ package com.example.finance
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
@@ -27,6 +28,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.AlertDialog
@@ -68,6 +70,7 @@ import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
 import com.example.finance.ui.theme.FinanceTheme
 import java.text.NumberFormat
+import java.time.LocalDate
 import java.time.OffsetDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -127,6 +130,7 @@ private fun FinanceApp() {
     var parentSenders by remember { mutableStateOf(categoryStore.loadParentSenders()) }
     var hiddenRecurring by remember { mutableStateOf(recurringStore.load()) }
     var editingTransaction by remember { mutableStateOf<FinanceTransaction?>(null) }
+    var selectedTransaction by remember { mutableStateOf<FinanceTransaction?>(null) }
 
     fun hideRecurring(key: String) {
         recurringStore.hide(key)
@@ -246,11 +250,17 @@ private fun FinanceApp() {
         FinanceCategories.apply(data, categoryOverrides, parentSenders, merchantRules, subscriptionDecisions)
     }
     val months = remember(categorized) { FinanceInsights.months(categorized) }
+    val detailTransaction = selectedTransaction?.let { selected ->
+        categorized.transactions.firstOrNull { it.identity == selected.identity } ?: selected
+    }
+    BackHandler(enabled = detailTransaction != null && editingTransaction == null) {
+        selectedTransaction = null
+    }
 
     Scaffold(
         containerColor = Background,
         bottomBar = {
-            NavigationBar(containerColor = Panel) {
+            if (detailTransaction == null) NavigationBar(containerColor = Panel) {
                 AppTab.entries.forEach { tab ->
                     NavigationBarItem(
                         selected = selectedTab == tab,
@@ -270,13 +280,28 @@ private fun FinanceApp() {
         }
     ) { padding ->
         val modifier = Modifier.padding(padding)
-        when (selectedTab) {
+        if (detailTransaction != null) {
+            val merchantKey = FinanceCategories.merchantKey(detailTransaction.merchant)
+            val categorySource = when {
+                detailTransaction.amountCents > 0 &&
+                    FinanceCategories.senderKey(detailTransaction.merchant) in parentSenders -> "Von dir als Eltern markiert"
+                detailTransaction.identity in categoryOverrides -> "Von dir für diese Buchung gewählt"
+                merchantKey in merchantRules -> "Deine Regel für diesen Händler"
+                else -> "Automatisch vorgeschlagen"
+            }
+            TransactionDetailScreen(
+                detailTransaction, categorized, categorySource,
+                onBack = { selectedTransaction = null },
+                onEditCategory = { editingTransaction = detailTransaction },
+                modifier = modifier
+            )
+        } else when (selectedTab) {
             AppTab.Overview -> OverviewScreen(
                 categorized, months, hiddenRecurring, subscriptionDecisions, ::hideRecurring,
                 ::restoreRecurring, ::decideSubscription,
-                { editingTransaction = it }, modifier
+                { selectedTransaction = it }, modifier
             )
-            AppTab.Transactions -> TransactionsScreen(categorized, months, { editingTransaction = it }, modifier)
+            AppTab.Transactions -> TransactionsScreen(categorized, months, { selectedTransaction = it }, modifier)
             AppTab.Analysis -> AnalysisScreen(categorized, months, modifier)
             AppTab.Account -> AccountScreen(
                 categorized, months, categoryOverrides.size + parentSenders.size + merchantRules.size,
@@ -412,14 +437,23 @@ private fun TransactionsScreen(data: FinanceOverview, months: List<MonthlySnapsh
     var query by rememberSaveable { mutableStateOf("") }
     var direction by rememberSaveable { mutableStateOf("Alle") }
     var monthKey by rememberSaveable { mutableStateOf("all") }
+    var categoryFilter by rememberSaveable { mutableStateOf("") }
+    var showCategoryFilter by remember { mutableStateOf(false) }
+    val categories = data.transactions.map { it.category }.distinct().sorted()
+    val selectedCategory = categoryFilter.takeIf { it in categories }.orEmpty()
     val selectedMonth = months.firstOrNull { it.key == monthKey }
     val filtered = (selectedMonth?.transactions ?: data.transactions)
         .filter { direction == "Alle" ||
             (direction == "Eingänge" && it.amountCents > 0) ||
             (direction == "Ausgaben" && it.amountCents < 0) }
+        .filter { selectedCategory.isBlank() || it.category == selectedCategory }
         .filter { query.isBlank() || it.merchant.contains(query, ignoreCase = true) ||
+            it.originalMerchant.contains(query, ignoreCase = true) ||
             it.detail.contains(query, ignoreCase = true) }
         .sortedByDescending { it.bookingDate ?: "" }
+    val incomingCents = filtered.filter { it.amountCents > 0 }.sumOf { it.amountCents }
+    val outgoingCents = filtered.filter { it.amountCents < 0 }.sumOf { -it.amountCents }
+    val dayGroups = filtered.groupBy { it.bookingDate ?: it.dateLabel.ifBlank { "Ohne Datum" } }
 
     LazyColumn(
         modifier = modifier.fillMaxSize(),
@@ -427,7 +461,7 @@ private fun TransactionsScreen(data: FinanceOverview, months: List<MonthlySnapsh
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item { ScreenTitle("Umsätze", "Suche und filtere deine Bewegungen") }
-        item { EmptyNote("Kategorien sind Vorschläge. Tippe auf einen Umsatz, um ihn anders zuzuordnen.") }
+        item { EmptyNote("Tippe auf einen Umsatz für alle Details und seine Kategorie.") }
         item {
             OutlinedTextField(
                 value = query,
@@ -466,11 +500,171 @@ private fun TransactionsScreen(data: FinanceOverview, months: List<MonthlySnapsh
                 }
             }
         }
-        item { SectionHeading("Bewegungen", "${filtered.size} Umsätze") }
-        items(filtered) { TransactionRow(it, data.currency, onTransactionClick) }
+        item {
+            ChoiceChip(
+                if (selectedCategory.isBlank()) "Alle Kategorien ▾" else "$selectedCategory ▾",
+                selectedCategory.isNotBlank()
+            ) { showCategoryFilter = true }
+        }
+        item { SectionHeading("Bewegungen", "${filtered.size} ${if (filtered.size == 1) "Umsatz" else "Umsätze"}") }
+        if (filtered.isNotEmpty()) item {
+            PanelCard {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Column {
+                        Text("Eingänge im Filter", color = Muted, fontSize = 11.sp)
+                        Text(formatCurrency(incomingCents, data.currency), color = Green, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                    }
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text("Ausgaben im Filter", color = Muted, fontSize = 11.sp)
+                        Text(formatCurrency(outgoingCents, data.currency), color = Red, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+        dayGroups.forEach { (day, transactions) ->
+            item {
+                Row(Modifier.fillMaxWidth().padding(top = 7.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(dayHeading(day), color = Ink, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    Text("${transactions.size} ${if (transactions.size == 1) "Buchung" else "Buchungen"}", color = Muted, fontSize = 11.sp)
+                }
+            }
+            items(transactions) { TransactionRow(it, data.currency, onTransactionClick) }
+        }
         if (filtered.isEmpty()) item { EmptyNote("Keine passenden Umsätze gefunden.") }
     }
+    if (showCategoryFilter) {
+        AlertDialog(
+            onDismissRequest = { showCategoryFilter = false },
+            containerColor = Panel,
+            title = { Text("Kategorie filtern", color = Ink, fontWeight = FontWeight.Bold) },
+            text = {
+                Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
+                    (listOf("") + categories).forEach { category ->
+                        TextButton(onClick = {
+                            categoryFilter = category
+                            showCategoryFilter = false
+                        }, modifier = Modifier.fillMaxWidth()) {
+                            Text(if (category.isBlank()) "Alle Kategorien" else category,
+                                color = if (category == selectedCategory) Purple else Ink)
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showCategoryFilter = false }) { Text("Schließen", color = Purple) } }
+        )
+    }
 }
+
+@Composable
+private fun TransactionDetailScreen(
+    transaction: FinanceTransaction,
+    data: FinanceOverview,
+    categorySource: String,
+    onBack: () -> Unit,
+    onEditCategory: () -> Unit,
+    modifier: Modifier
+) {
+    val incoming = transaction.amountCents >= 0
+    val accent = if (incoming) Green else Red
+    val merchantKey = FinanceCategories.merchantKey(transaction.merchant)
+    val related = data.transactions.filter { other ->
+        (other.amountCents >= 0) == incoming &&
+            if (merchantKey.isNotBlank()) FinanceCategories.merchantKey(other.merchant) == merchantKey
+            else other.merchant.equals(transaction.merchant, ignoreCase = true)
+    }
+    val relatedTotal = related.sumOf { kotlin.math.abs(it.amountCents) }
+    val transactionDate = transaction.transactionDate?.takeIf { it != transaction.bookingDate }
+    val source = when {
+        transaction.identity.startsWith("statement:") -> "Importierter Kontoauszug"
+        data.dataSource == "banking_sandbox" -> "Testkonto"
+        data.dataSource == "sample" -> "Beispieldaten"
+        else -> "Bank Austria"
+    }
+
+    LazyColumn(
+        modifier = modifier.fillMaxSize(),
+        contentPadding = PaddingValues(20.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        item {
+            TextButton(onClick = onBack) { Text("← Zurück", color = Purple, fontWeight = FontWeight.SemiBold) }
+        }
+        item {
+            Column(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp))
+                    .background(Brush.linearGradient(listOf(PanelRaised, PurpleMuted, Panel)))
+                    .padding(22.dp)
+            ) {
+                Text(if (incoming) "EINGANG" else "AUSGABE", color = accent, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(12.dp))
+                Text(transaction.merchant, color = Ink, fontSize = 23.sp, lineHeight = 29.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(12.dp))
+                Text(formatSigned(transaction.amountCents, data.currency), color = accent, fontSize = 29.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(7.dp))
+                Text(transaction.dateLabel, color = Muted, fontSize = 13.sp)
+            }
+        }
+        item {
+            PanelCard {
+                Text("Einordnung", color = Ink, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(8.dp))
+                InfoRow("Kategorie", transaction.category)
+                Text(categorySource, color = Muted, fontSize = 11.sp)
+                Spacer(Modifier.height(12.dp))
+                ActionButton("Kategorie ändern", onEditCategory)
+            }
+        }
+        item {
+            PanelCard {
+                Text("Buchungsdetails", color = Ink, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(8.dp))
+                InfoRow("Buchungsdatum", transaction.dateLabel)
+                if (transactionDate != null) InfoRow("Transaktionsdatum", germanDate(transactionDate))
+                InfoRow("Quelle", source)
+                if (!transaction.originalMerchant.equals(transaction.merchant, ignoreCase = true)) {
+                    Spacer(Modifier.height(10.dp))
+                    Text(if (incoming) "Originaler Absender" else "Originaler Händler", color = Muted, fontSize = 11.sp)
+                    SelectionContainer {
+                        Text(transaction.originalMerchant, color = Ink, fontSize = 13.sp, lineHeight = 19.sp)
+                    }
+                }
+            }
+        }
+        item {
+            PanelCard {
+                Text("Buchungstext", color = Ink, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(8.dp))
+                SelectionContainer {
+                    Text(transaction.detail.ifBlank { "Kein weiterer Buchungstext vorhanden." },
+                        color = if (transaction.detail.isBlank()) Muted else Ink,
+                        fontSize = 13.sp, lineHeight = 20.sp)
+                }
+            }
+        }
+        if (related.size > 1) item {
+            PanelCard {
+                Text(if (incoming) "Von diesem Absender" else "Bei diesem Händler", color = Ink,
+                    fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(7.dp))
+                Text("${related.size} Buchungen · ${formatCurrency(relatedTotal, data.currency)} insgesamt",
+                    color = accent, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Text("Im aktuell verfügbaren Verlauf", color = Muted, fontSize = 11.sp)
+            }
+        }
+    }
+}
+
+private fun germanDate(value: String): String = runCatching {
+    LocalDate.parse(value).format(DateTimeFormatter.ofPattern("dd.MM.yyyy", Locale.GERMAN))
+}.getOrDefault(value)
+
+private fun dayHeading(value: String): String = runCatching {
+    val date = runCatching { LocalDate.parse(value) }.getOrElse {
+        LocalDate.parse(value, DateTimeFormatter.ofPattern("dd.MM.yyyy", Locale.GERMAN))
+    }
+    date.format(DateTimeFormatter.ofPattern("EEEE, d. MMMM yyyy", Locale.GERMAN))
+        .replaceFirstChar { it.titlecase(Locale.GERMAN) }
+}.getOrDefault(value)
 
 @Composable
 private fun AnalysisScreen(data: FinanceOverview, months: List<MonthlySnapshot>, modifier: Modifier) {

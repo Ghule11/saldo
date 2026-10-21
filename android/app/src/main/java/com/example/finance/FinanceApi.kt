@@ -42,7 +42,9 @@ data class FinanceTransaction(
     val amountCents: Long,
     val category: String,
     val bookingDate: String? = null,
-    val identity: String = ""
+    val identity: String = "",
+    val originalMerchant: String = merchant,
+    val transactionDate: String? = null
 )
 
 data class BankingConnectionStatus(
@@ -99,7 +101,8 @@ object FinanceApi {
                 amountCents = amount,
                 category = if (amount > 0) "Eingang" else "Ausgang",
                 bookingDate = item.getString("bookingDate"),
-                identity = item.getString("identity")
+                identity = item.getString("identity"),
+                originalMerchant = merchant
             )
         }
         return FinanceOverview(
@@ -233,9 +236,10 @@ object FinanceApi {
                     ?: 0L
                 val direction = item.optString("credit_debit_indicator")
                 val signedAmount = if (direction == "CRDT") kotlin.math.abs(amount) else -kotlin.math.abs(amount)
-                val remittance = item.optJSONArray("remittance_information")
-                    ?.optString(0)
-                    ?.takeUnless { it.isNullOrBlank() || it == "null" }
+                val remittance = item.optJSONArray("remittance_information")?.let { lines ->
+                    (0 until lines.length()).mapNotNull { lines.optString(it).cleanValue() }
+                        .joinToString("\n").ifBlank { null }
+                }
                 val parties = if (direction == "CRDT") listOf("debtor", "creditor") else listOf("creditor", "debtor")
                 val merchant = parties
                     .firstNotNullOfOrNull { item.optJSONObject(it)?.optString("name")?.cleanValue() }
@@ -256,13 +260,15 @@ object FinanceApi {
                     amountCents = signedAmount,
                     category = if (direction == "CRDT") "Eingang" else "Ausgang",
                     bookingDate = item.optString("booking_date").cleanValue(),
+                    originalMerchant = merchant,
+                    transactionDate = item.optString("transaction_date").cleanValue(),
                     identity = fingerprint(
                         if (isSandbox) "banking_sandbox" else "banking_production",
                         optString("institutionName"),
                         item.optString("entry_reference"),
                         item.optString("booking_date"),
                         signedAmount.toString(),
-                        remittance.orEmpty(),
+                        remittance?.lineSequence()?.firstOrNull().orEmpty(),
                         item.optJSONObject("creditor")?.optString("name").orEmpty(),
                         item.optJSONObject("debtor")?.optString("name").orEmpty(),
                         item.optString("reference_number")
