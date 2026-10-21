@@ -119,8 +119,11 @@ private fun FinanceApp() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val categoryStore = remember(context) { CategoryOverrideStore(context.applicationContext) }
+    val subscriptionStore = remember(context) { SubscriptionDecisionStore(context.applicationContext) }
     val recurringStore = remember(context) { RecurringVisibilityStore(context.applicationContext) }
     var categoryOverrides by remember { mutableStateOf(categoryStore.load()) }
+    var merchantRules by remember { mutableStateOf(categoryStore.loadMerchantRules()) }
+    var subscriptionDecisions by remember { mutableStateOf(subscriptionStore.load()) }
     var parentSenders by remember { mutableStateOf(categoryStore.loadParentSenders()) }
     var hiddenRecurring by remember { mutableStateOf(recurringStore.load()) }
     var editingTransaction by remember { mutableStateOf<FinanceTransaction?>(null) }
@@ -133,6 +136,35 @@ private fun FinanceApp() {
     fun restoreRecurring(prefix: String) {
         recurringStore.restore(prefix)
         hiddenRecurring = recurringStore.load()
+    }
+
+    fun decideSubscription(merchant: String, decision: SubscriptionDecision) {
+        val key = FinanceCategories.merchantKey(merchant)
+        if (key.isBlank()) return
+        subscriptionStore.save(key, decision)
+        subscriptionDecisions = subscriptionStore.load()
+        if (decision == SubscriptionDecision.Confirmed) {
+            categoryStore.saveMerchantRule(key, TransactionCategory.Subscriptions)
+            merchantRules = categoryStore.loadMerchantRules()
+            recurringStore.show("subscription:$key")
+            hiddenRecurring = recurringStore.load()
+        } else if (merchantRules[key] == TransactionCategory.Subscriptions) {
+            categoryStore.saveMerchantRule(key, null)
+            merchantRules = categoryStore.loadMerchantRules()
+        }
+    }
+
+    fun removeMerchantRule(merchant: String) {
+        val key = FinanceCategories.merchantKey(merchant)
+        categoryStore.saveMerchantRule(key, null)
+        merchantRules = categoryStore.loadMerchantRules()
+        subscriptionStore.save(key, null)
+        subscriptionDecisions = subscriptionStore.load()
+    }
+
+    fun resetSubscriptionDecision(merchant: String) {
+        subscriptionStore.save(merchant, null)
+        subscriptionDecisions = subscriptionStore.load()
     }
 
     fun startBankConnection() {
@@ -210,8 +242,8 @@ private fun FinanceApp() {
         )
         return
     }
-    val categorized = remember(data, categoryOverrides, parentSenders) {
-        FinanceCategories.apply(data, categoryOverrides, parentSenders)
+    val categorized = remember(data, categoryOverrides, parentSenders, merchantRules, subscriptionDecisions) {
+        FinanceCategories.apply(data, categoryOverrides, parentSenders, merchantRules, subscriptionDecisions)
     }
     val months = remember(categorized) { FinanceInsights.months(categorized) }
 
@@ -240,13 +272,16 @@ private fun FinanceApp() {
         val modifier = Modifier.padding(padding)
         when (selectedTab) {
             AppTab.Overview -> OverviewScreen(
-                categorized, months, hiddenRecurring, ::hideRecurring, ::restoreRecurring,
+                categorized, months, hiddenRecurring, subscriptionDecisions, ::hideRecurring,
+                ::restoreRecurring, ::decideSubscription,
                 { editingTransaction = it }, modifier
             )
             AppTab.Transactions -> TransactionsScreen(categorized, months, { editingTransaction = it }, modifier)
             AppTab.Analysis -> AnalysisScreen(categorized, months, modifier)
             AppTab.Account -> AccountScreen(
-                categorized, months, categoryOverrides.size + parentSenders.size, bankingStatus, isLoading,
+                categorized, months, categoryOverrides.size + parentSenders.size + merchantRules.size,
+                merchantRules, subscriptionDecisions, ::removeMerchantRule, ::resetSubscriptionDecision,
+                bankingStatus, isLoading,
                 isConnecting, errorMessage, connectError, connectNotice, { reloadKey++ },
                 { startBankConnection() }, modifier)
         }
@@ -255,13 +290,30 @@ private fun FinanceApp() {
     editingTransaction?.let { transaction ->
         CategoryDialog(
             transaction = transaction,
+            merchantRule = merchantRules[FinanceCategories.merchantKey(transaction.merchant)],
             onDismiss = { editingTransaction = null },
-            onChoose = { choice ->
+            onChoose = { choice, forMerchant ->
                 if (transaction.amountCents > 0) {
                     categoryStore.save(transaction.identity, null)
                     categoryOverrides = categoryOverrides - transaction.identity
                     categoryStore.saveParentSender(transaction.merchant, choice == TransactionCategory.Parents)
                     parentSenders = categoryStore.loadParentSenders()
+                } else if (forMerchant) {
+                    val key = FinanceCategories.merchantKey(transaction.merchant)
+                    categoryStore.save(transaction.identity, null)
+                    categoryOverrides = categoryOverrides - transaction.identity
+                    categoryStore.saveMerchantRule(key, choice)
+                    merchantRules = categoryStore.loadMerchantRules()
+                    subscriptionStore.save(key, when (choice) {
+                        TransactionCategory.Subscriptions -> SubscriptionDecision.Confirmed
+                        null -> null
+                        else -> SubscriptionDecision.Rejected
+                    })
+                    subscriptionDecisions = subscriptionStore.load()
+                    if (choice == TransactionCategory.Subscriptions) {
+                        recurringStore.show("subscription:$key")
+                        hiddenRecurring = recurringStore.load()
+                    }
                 } else {
                     categoryStore.save(transaction.identity, choice)
                     categoryOverrides = categoryOverrides.toMutableMap().apply {
@@ -323,8 +375,10 @@ private fun OverviewScreen(
     data: FinanceOverview,
     months: List<MonthlySnapshot>,
     hiddenRecurring: Set<String>,
+    subscriptionDecisions: Map<String, SubscriptionDecision>,
     onHideRecurring: (String) -> Unit,
     onRestoreRecurring: (String) -> Unit,
+    onSubscriptionDecision: (String, SubscriptionDecision) -> Unit,
     onTransactionClick: (FinanceTransaction) -> Unit,
     modifier: Modifier
 ) {
@@ -342,7 +396,8 @@ private fun OverviewScreen(
             item { MonthlyTotals(current, data.currency) }
             item { NetCard(current, data.currency) }
             item { RecurringIncomeCard(data, data.currency, hiddenRecurring, onHideRecurring, onRestoreRecurring) }
-            item { SubscriptionsCard(data, data.currency, hiddenRecurring, onHideRecurring, onRestoreRecurring) }
+            item { SubscriptionsCard(data, data.currency, hiddenRecurring, subscriptionDecisions,
+                onSubscriptionDecision, onRestoreRecurring) }
             item { MonthlyChart(months, data.currency) }
             item { SectionHeading("Letzte Umsätze", current.label) }
             items(current.transactions.take(4)) { TransactionRow(it, data.currency, onTransactionClick) }
@@ -455,6 +510,10 @@ private fun AccountScreen(
     data: FinanceOverview,
     months: List<MonthlySnapshot>,
     correctedCount: Int,
+    merchantRules: Map<String, TransactionCategory>,
+    subscriptionDecisions: Map<String, SubscriptionDecision>,
+    onRemoveMerchantRule: (String) -> Unit,
+    onResetSubscriptionDecision: (String) -> Unit,
     bankingStatus: BankingConnectionStatus?,
     isLoading: Boolean,
     isConnecting: Boolean,
@@ -483,6 +542,42 @@ private fun AccountScreen(
                     InfoRow("Eigene Zuordnungen", "$correctedCount")
                     InfoRow("Zeitraum", if (months.isEmpty()) "Keine Daten" else
                         "${months.last().label} – ${months.first().label}")
+                }
+            }
+        }
+        if (merchantRules.isNotEmpty()) item {
+            PanelCard {
+                SectionHeading("Händlerregeln", "${merchantRules.size} gespeichert")
+                Spacer(Modifier.height(8.dp))
+                merchantRules.toSortedMap().forEach { (merchant, category) ->
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(FinanceCategories.displayMerchant(merchant).replaceFirstChar { it.titlecase(Locale.GERMAN) },
+                                color = Ink, fontSize = 12.sp)
+                            Text(category.label, color = Muted, fontSize = 11.sp)
+                        }
+                        TextButton(onClick = { onRemoveMerchantRule(merchant) }) {
+                            Text("Entfernen", color = Purple, fontSize = 11.sp)
+                        }
+                    }
+                }
+            }
+        }
+        val rejectedSubscriptions = subscriptionDecisions.filter { (merchant, decision) ->
+            decision == SubscriptionDecision.Rejected && merchant !in merchantRules
+        }
+        if (rejectedSubscriptions.isNotEmpty()) item {
+            PanelCard {
+                SectionHeading("Keine Abos", "${rejectedSubscriptions.size} ausgeschlossen")
+                Spacer(Modifier.height(8.dp))
+                rejectedSubscriptions.keys.sorted().forEach { merchant ->
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text(FinanceCategories.displayMerchant(merchant).replaceFirstChar { it.titlecase(Locale.GERMAN) },
+                            modifier = Modifier.weight(1f), color = Ink, fontSize = 12.sp)
+                        TextButton(onClick = { onResetSubscriptionDecision(merchant) }) {
+                            Text("Rückgängig", color = Purple, fontSize = 11.sp)
+                        }
+                    }
                 }
             }
         }
@@ -710,13 +805,73 @@ private fun SubscriptionsCard(
     data: FinanceOverview,
     currency: String,
     hidden: Set<String>,
-    onHide: (String) -> Unit,
+    decisions: Map<String, SubscriptionDecision>,
+    onDecision: (String, SubscriptionDecision) -> Unit,
     onRestore: (String) -> Unit
 ) {
-    val subscriptions = remember(data) { FinanceInsights.subscriptions(data) }
-    if (subscriptions.isEmpty()) return
-    RecurringEntriesCard("Mögliche Abos", "Bekannte Dienste oder selbst zugeordnet", "subscription:",
-        subscriptions, currency, Red, hidden, onHide, onRestore)
+    val subscriptions = remember(data, decisions) { FinanceInsights.subscriptions(data, decisions) }
+    val confirmed = subscriptions.filter {
+        decisions[it.key.removePrefix("subscription:")] == SubscriptionDecision.Confirmed
+    }
+    val suggestions = subscriptions.filter {
+        decisions[it.key.removePrefix("subscription:")] == null && it.key !in hidden
+    }.take(6)
+    val hasHidden = subscriptions.any { it.key in hidden }
+    if (confirmed.isEmpty() && suggestions.isEmpty() && !hasHidden) return
+
+    PanelCard {
+        SectionHeading("Abos", "${confirmed.size} bestätigt")
+        if (confirmed.isNotEmpty()) {
+            Spacer(Modifier.height(12.dp))
+            Text("Monatlich geschätzt: ${formatCurrency(confirmed.sumOf { it.amountCents }, currency)}",
+                color = Red, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+            Text("Summe der letzten Beträge je bestätigtem Abo.", color = Muted, fontSize = 10.sp)
+            Spacer(Modifier.height(8.dp))
+            confirmed.forEach { entry ->
+                Row(Modifier.fillMaxWidth().padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(entry.name, color = Ink, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        Text("Zuletzt ${entry.lastDate}", color = Muted, fontSize = 10.sp)
+                    }
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text(formatCurrency(entry.amountCents, currency), color = Red, fontSize = 12.sp)
+                        TextButton(onClick = {
+                            onDecision(entry.key.removePrefix("subscription:"), SubscriptionDecision.Rejected)
+                        }) { Text("Kein Abo", color = Muted, fontSize = 10.sp) }
+                    }
+                }
+            }
+        }
+        if (suggestions.isNotEmpty()) {
+            Spacer(Modifier.height(12.dp))
+            Text("Mögliche Abos", color = Ink, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Text("Bitte prüfen und zuordnen.", color = Muted, fontSize = 10.sp)
+            suggestions.forEach { entry ->
+                Column(Modifier.fillMaxWidth().padding(vertical = 7.dp)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Column(Modifier.weight(1f)) {
+                            Text(entry.name, color = Ink, fontSize = 12.sp, maxLines = 2,
+                                overflow = TextOverflow.Ellipsis)
+                            Text("Zuletzt ${entry.lastDate}", color = Muted, fontSize = 10.sp)
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Text(formatCurrency(entry.amountCents, currency), color = Red, fontSize = 12.sp)
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        TextButton(onClick = {
+                            onDecision(entry.key.removePrefix("subscription:"), SubscriptionDecision.Confirmed)
+                        }) { Text("Ist ein Abo", color = Purple, fontSize = 11.sp) }
+                        TextButton(onClick = {
+                            onDecision(entry.key.removePrefix("subscription:"), SubscriptionDecision.Rejected)
+                        }) { Text("Kein Abo", color = Muted, fontSize = 11.sp) }
+                    }
+                }
+            }
+        }
+        if (hasHidden) TextButton(onClick = { onRestore("subscription:") }) {
+            Text("Früher ausgeblendete anzeigen", color = Purple, fontSize = 11.sp)
+        }
+    }
 }
 
 @Composable
@@ -807,9 +962,14 @@ private fun TransactionRow(transaction: FinanceTransaction, currency: String, on
 @Composable
 private fun CategoryDialog(
     transaction: FinanceTransaction,
+    merchantRule: TransactionCategory?,
     onDismiss: () -> Unit,
-    onChoose: (TransactionCategory?) -> Unit
+    onChoose: (TransactionCategory?, Boolean) -> Unit
 ) {
+    val merchantKey = FinanceCategories.merchantKey(transaction.merchant)
+    var forMerchant by remember(transaction.identity) {
+        mutableStateOf(transaction.amountCents < 0 && merchantKey.isNotBlank())
+    }
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = Panel,
@@ -820,16 +980,28 @@ private fun CategoryDialog(
                 if (transaction.amountCents > 0) {
                     Spacer(Modifier.height(6.dp))
                     Text("Eltern gilt für alle Eingänge von diesem Absender.", color = Muted, fontSize = 11.sp)
+                } else if (merchantKey.isNotBlank()) {
+                    Spacer(Modifier.height(9.dp))
+                    Row(Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        ChoiceChip("Nur diese Buchung", !forMerchant) { forMerchant = false }
+                        ChoiceChip("Diesen Händler", forMerchant) { forMerchant = true }
+                    }
+                    Text(if (forMerchant) "Gilt auch für künftige Buchungen dieses Händlers."
+                        else "Ändert nur diese eine Buchung.", color = Muted, fontSize = 11.sp)
+                    if (merchantRule != null) {
+                        Text("Händlerregel: ${merchantRule.label}", color = Purple, fontSize = 11.sp)
+                    }
                 }
                 Spacer(Modifier.height(9.dp))
                 Column(Modifier.heightIn(max = 380.dp).verticalScroll(rememberScrollState())) {
                     FinanceCategories.choices(transaction).forEach { category ->
-                        TextButton(onClick = { onChoose(category) }, modifier = Modifier.fillMaxWidth()) {
+                        TextButton(onClick = { onChoose(category, forMerchant) }, modifier = Modifier.fillMaxWidth()) {
                             Text(category.label, color = if (transaction.category == category.label) Purple else Ink)
                         }
                     }
-                    TextButton(onClick = { onChoose(null) }, modifier = Modifier.fillMaxWidth()) {
-                        Text("Automatische Zuordnung", color = Muted)
+                    TextButton(onClick = { onChoose(null, forMerchant) }, modifier = Modifier.fillMaxWidth()) {
+                        Text(if (forMerchant) "Händlerregel entfernen" else "Eigene Zuordnung entfernen", color = Muted)
                     }
                 }
             }

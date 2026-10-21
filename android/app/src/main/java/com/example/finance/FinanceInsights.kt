@@ -86,9 +86,16 @@ object FinanceInsights {
         return amounts.map { (name, amount) -> SpendingCategory(name, amount, amount.toFloat() / maximum) }
     }
 
-    fun subscriptions(overview: FinanceOverview): List<RecurringEntry> = overview.transactions
-        .filter { it.amountCents < 0 && it.category == TransactionCategory.Subscriptions.label }
-        .groupBy { FinanceCategories.recurringMerchantKey(it.merchant) }
+    fun subscriptions(
+        overview: FinanceOverview,
+        decisions: Map<String, SubscriptionDecision> = emptyMap()
+    ): List<RecurringEntry> = overview.transactions
+        .filter { transaction ->
+            val decision = decisions[FinanceCategories.merchantKey(transaction.merchant)]
+            transaction.amountCents < 0 && decision != SubscriptionDecision.Rejected &&
+                (decision == SubscriptionDecision.Confirmed || transaction.category == TransactionCategory.Subscriptions.label)
+        }
+        .groupBy { FinanceCategories.merchantKey(it.merchant) }
         .filterKeys { it.isNotBlank() }
         .map { (merchantKey, entries) ->
             val latest = entries.maxBy { it.bookingDate.orEmpty() }

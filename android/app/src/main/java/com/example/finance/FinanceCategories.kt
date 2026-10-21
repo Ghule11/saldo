@@ -20,6 +20,8 @@ enum class TransactionCategory(val label: String) {
     Other("Sonstiges")
 }
 
+enum class SubscriptionDecision { Confirmed, Rejected }
+
 object FinanceCategories {
     private val groceryPattern = Regex("(?iu)(?<!\\p{L})(?:interspar|intersp\\.?|spar|billa|penny|hofer|lidl|aldi|netto)(?!\\p{L})")
     private val drugstorePattern = Regex("(?iu)(?<!\\p{L})(?:bipa|dm)(?!\\p{L})|drogerie|drogeriemarkt")
@@ -32,7 +34,7 @@ object FinanceCategories {
             "icloud\\+?|prime video|amazon prime|microsoft|msbill\\.info|office 365|chatgpt plus"
     )
 
-    fun suggest(transaction: FinanceTransaction): TransactionCategory {
+    fun suggest(transaction: FinanceTransaction, allowSubscriptionSuggestion: Boolean = true): TransactionCategory {
         if (transaction.amountCents > 0) return TransactionCategory.Income
         val text = "${transaction.merchant} ${transaction.detail}".lowercase(Locale.ROOT)
 
@@ -45,8 +47,8 @@ object FinanceCategories {
             drugstorePattern.containsMatchIn(text) -> TransactionCategory.Drugstore
             transaction.category == "Transport" || listOf("wiener linien", "öbb", "oebb", "dsb", "parking", "tankstelle", "uber", "bolt")
                 .any { it in text } -> TransactionCategory.Mobility
-            monthlySubscriptionPattern.containsMatchIn(text) ||
-                transaction.merchant.equals("TV", ignoreCase = true) -> TransactionCategory.Subscriptions
+            allowSubscriptionSuggestion && (monthlySubscriptionPattern.containsMatchIn(text) ||
+                transaction.merchant.equals("TV", ignoreCase = true)) -> TransactionCategory.Subscriptions
             restaurantPattern.containsMatchIn(text) -> TransactionCategory.Restaurants
             transaction.category == "Shopping" || listOf("lookfantastic", "viori", "amazon", "zalando", "aliexpress", "thalia", "trafik", "m & s")
                 .any { it in text } -> TransactionCategory.Shopping
@@ -111,15 +113,33 @@ object FinanceCategories {
         }
     }
 
+    fun merchantKey(merchant: String): String {
+        val key = recurringMerchantKey(merchant)
+        return key.takeUnless { it.length < 3 || it in setOf("umsatz", "pos", "kartenzahlung", "e comm") }.orEmpty()
+    }
+
     fun apply(
         overview: FinanceOverview,
         overrides: Map<String, TransactionCategory>,
-        parentSenders: Set<String> = emptySet()
+        parentSenders: Set<String> = emptySet(),
+        merchantRules: Map<String, TransactionCategory> = emptyMap(),
+        subscriptionDecisions: Map<String, SubscriptionDecision> = emptyMap()
     ): FinanceOverview {
         val categorized = overview.transactions.map { transaction ->
-            val category = overrides[transaction.identity]
+            val merchantKey = merchantKey(transaction.merchant)
+            val decision = subscriptionDecisions[merchantKey]
+            val individualOverride = overrides[transaction.identity].takeUnless {
+                it == TransactionCategory.Subscriptions && decision == SubscriptionDecision.Rejected
+            }
+            val category = individualOverride
                 ?: if (transaction.amountCents > 0 && senderKey(transaction.merchant) in parentSenders) {
                     TransactionCategory.Parents
+                } else if (transaction.amountCents < 0) {
+                    merchantRules[merchantKey] ?: when (decision) {
+                        SubscriptionDecision.Confirmed -> TransactionCategory.Subscriptions
+                        SubscriptionDecision.Rejected -> suggest(transaction, allowSubscriptionSuggestion = false)
+                        null -> suggest(transaction)
+                    }
                 } else {
                     suggest(transaction)
                 }
@@ -137,6 +157,7 @@ object FinanceCategories {
 class CategoryOverrideStore(context: Context) {
     private val preferences = context.getSharedPreferences("saldo_categories_v1", Context.MODE_PRIVATE)
     private val parentPreferences = context.getSharedPreferences("saldo_parent_senders_v1", Context.MODE_PRIVATE)
+    private val merchantPreferences = context.getSharedPreferences("saldo_merchant_rules_v1", Context.MODE_PRIVATE)
 
     fun load(): Map<String, TransactionCategory> = preferences.all.mapNotNull { (key, value) ->
         val category = TransactionCategory.entries.firstOrNull { it.name == value }
@@ -160,6 +181,36 @@ class CategoryOverrideStore(context: Context) {
             if (enabled) putBoolean(key, true) else remove(key)
         }.apply()
     }
+
+    fun loadMerchantRules(): Map<String, TransactionCategory> = merchantPreferences.all.mapNotNull { (key, value) ->
+        val category = TransactionCategory.entries.firstOrNull { it.name == value }
+        category?.let { key to it }
+    }.toMap()
+
+    fun saveMerchantRule(merchant: String, category: TransactionCategory?) {
+        val key = FinanceCategories.merchantKey(merchant)
+        if (key.isBlank()) return
+        merchantPreferences.edit().apply {
+            if (category == null) remove(key) else putString(key, category.name)
+        }.apply()
+    }
+}
+
+class SubscriptionDecisionStore(context: Context) {
+    private val preferences = context.getSharedPreferences("saldo_subscription_decisions_v1", Context.MODE_PRIVATE)
+
+    fun load(): Map<String, SubscriptionDecision> = preferences.all.mapNotNull { (key, value) ->
+        val decision = SubscriptionDecision.entries.firstOrNull { it.name == value }
+        decision?.let { key to it }
+    }.toMap()
+
+    fun save(merchant: String, decision: SubscriptionDecision?) {
+        val key = FinanceCategories.merchantKey(merchant)
+        if (key.isBlank()) return
+        preferences.edit().apply {
+            if (decision == null) remove(key) else putString(key, decision.name)
+        }.apply()
+    }
 }
 
 class RecurringVisibilityStore(context: Context) {
@@ -169,6 +220,10 @@ class RecurringVisibilityStore(context: Context) {
 
     fun hide(key: String) {
         preferences.edit().putBoolean(key, true).apply()
+    }
+
+    fun show(key: String) {
+        preferences.edit().remove(key).apply()
     }
 
     fun restore(prefix: String) {

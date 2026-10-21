@@ -2,7 +2,7 @@
 
 Saldo ist eine nicht kommerzielle Android-App für die persönliche Nutzung durch ihren Betreiber. Es gibt keine öffentlichen Nutzerkonten und keine Werbung oder Analysedienste.
 
-Nach einer ausdrücklichen Freigabe bei der Bank ruft das lokal auf dem eigenen Computer laufende Saldo-Backend über Enable Banking Kontostand und Umsätze ab. Die Android-App erhält diese Daten vom lokalen Backend und zeigt sie an. Saldo speichert den Enable-Banking-Sitzungsverweis und erfolgreich abgerufene Bankdaten verschlüsselt auf dem Computer. Die privaten API-Schlüssel liegen außerhalb des Git-Repositories. Manuelle Kategorieänderungen speichert Android lokal auf dem Gerät; ihre Schlüssel sind aus Transaktionsmerkmalen abgeleitete Prüfsummen.
+Nach einer ausdrücklichen Freigabe bei der Bank ruft das lokal auf dem eigenen Computer laufende Saldo-Backend über Enable Banking Kontostand und Umsätze ab. Die Android-App erhält diese Daten vom lokalen Backend und zeigt sie an. Saldo speichert den Enable-Banking-Sitzungsverweis und erfolgreich abgerufene Bankdaten verschlüsselt auf dem Computer. Die privaten API-Schlüssel liegen außerhalb des Git-Repositories. Manuelle Kategorieänderungen, Händlerregeln und Abo-Entscheidungen speichert Android lokal auf dem Gerät. Einzelne Buchungen werden dabei über aus Transaktionsmerkmalen abgeleitete Prüfsummen erkannt; für Händlerregeln und Abo-Entscheidungen werden normalisierte Händlernamen gespeichert.
 
 Für einen aktiven Bankabruf ermittelt das Backend bei `api.ipify.org` die öffentliche IPv4-Adresse des Computers und übermittelt sie zusammen mit der App-Kennung an Enable Banking. Der IP-Dienst erhält dabei keine Kontodaten. Dieser Aufruf erfolgt nur bei einem neuen Bankabruf, nicht beim Anzeigen zwischengespeicherter Daten.
 
