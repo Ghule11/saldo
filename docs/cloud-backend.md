@@ -13,7 +13,7 @@ Jede Instanz hat eine eigene Enable-Banking-Anwendung, eigene Secrets und eine e
 
 Vier Secrets sind je Instanz gesetzt: `EB_APPLICATION_ID`, `EB_PRIVATE_KEY`, `PROBE_TOKEN` und `DATA_ENCRYPTION_KEY`. Die lokalen Sicherungskopien der Admin- und Verschlüsselungsschlüssel liegen DPAPI-geschützt außerhalb des Repositories unter `%LOCALAPPDATA%\Saldo`. Secrets niemals in GitHub, Chatnachrichten oder Konfigurationsdateien eintragen.
 
-Die Production-Anwendung ist aktiv und die HTTPS-Rücksprungadresse des Workers ist registriert. Eine ältere Bank-Austria-Umsatzliste mit 1118 Buchungen von Mai 2023 bis Oktober 2026 wurde in die Production-Datenbank übernommen. **Die eigentliche Bankfreigabe über diesen Worker ist noch offen.** Bis sie abgeschlossen ist, gibt es dort keinen aktuellen Kontostand oder automatische neue Bankumsätze. Der Sandbox-Worker hat bereits ein verbundenes synthetisches Konto und 611 Testbuchungen; die Anzeige im Android-Emulator wurde geprüft.
+Die Production-Anwendung ist aktiv und die HTTPS-Rücksprungadresse des Workers ist registriert. Eine ältere Bank-Austria-Umsatzliste mit 1118 Buchungen von Mai 2023 bis Oktober 2026 wurde in die Production-Datenbank übernommen. Am 22.10.2026 wurde das Bank-Austria-Konto über den Cloud-Worker freigegeben: Der Status meldete genau ein Konto, und ein neuer Abruf lieferte Kontostandsdaten und 134 aktuelle Buchungen. Damit ist der Cloud-Abruf unabhängig vom eingeschalteten PC. Die Anzeige auf dem echten Telefon muss noch nach Installation und Production-Kopplung geprüft werden. Der Sandbox-Worker hat ein verbundenes synthetisches Konto und 611 Testbuchungen; die Anzeige im Android-Emulator wurde geprüft.
 
 ## Bankabrufe
 
