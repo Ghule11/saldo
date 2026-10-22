@@ -59,13 +59,16 @@ data class BankingConnectionStatus(
 object FinanceApi {
     private const val TIMEOUT_MILLIS = 60_000
     private const val CLOUD_URL = "https://saldo-bank-probe.saldo-cloud-probe.workers.dev"
+    private const val PRODUCTION_CLOUD_URL = "https://saldo-bank.saldo-cloud-probe.workers.dev"
     private var cloudStore: CloudConnectionStore? = null
 
     fun configureCloud(store: CloudConnectionStore) {
         cloudStore = store
     }
 
-    fun isCloudConnected(): Boolean = cloudStore?.token() != null
+    fun isCloudConnected(): Boolean = cloudStore?.credentials() != null
+
+    fun cloudEnvironment(): String? = cloudStore?.credentials()?.environment
 
     fun disconnectCloud() {
         if (!isCloudConnected()) return
@@ -73,8 +76,9 @@ object FinanceApi {
         cloudStore?.clear()
     }
 
-    fun pairCloud(code: String) {
-        val connection = URL("$CLOUD_URL/api/pairing/claim").openConnection() as HttpURLConnection
+    fun pairCloud(code: String, environment: String) {
+        val cloudUrl = if (environment == "PRODUCTION") PRODUCTION_CLOUD_URL else CLOUD_URL
+        val connection = URL("$cloudUrl/api/pairing/claim").openConnection() as HttpURLConnection
         try {
             connection.requestMethod = "POST"
             connection.connectTimeout = TIMEOUT_MILLIS
@@ -88,7 +92,7 @@ object FinanceApi {
             }
             val result = JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
             val token = result.getString("token")
-            (cloudStore ?: throw IOException("Cloud-Speicher ist nicht bereit.")).save(token)
+            (cloudStore ?: throw IOException("Cloud-Speicher ist nicht bereit.")).save(token, environment)
         } finally {
             connection.disconnect()
         }
@@ -121,7 +125,6 @@ object FinanceApi {
     }
 
     fun fetchImportedHistory(): FinanceOverview? {
-        if (isCloudConnected()) return null
         val response = getJson("/api/history")
         val items = response.optJSONArray("transactions") ?: return null
         if (items.length() == 0) return null
@@ -168,15 +171,21 @@ object FinanceApi {
         )
     }
 
-    fun startBankAustriaAuthorization() {
-        requestJson("/api/banking/authorization/bank-austria", "POST")
+    fun startBankAustriaAuthorization(): String? {
+        val result = requestJson("/api/banking/authorization/bank-austria", "POST")
+        return if (cloudEnvironment() == "PRODUCTION") result.getString("url") else null
     }
 
     private fun getJson(path: String): JSONObject = requestJson(path, "GET")
 
     private fun requestJson(path: String, method: String): JSONObject {
-        val cloudToken = cloudStore?.token()
-        val baseUrl = if (cloudToken == null) BuildConfig.FINANCE_API_BASE_URL else CLOUD_URL
+        val cloudCredentials = cloudStore?.credentials()
+        val cloudToken = cloudCredentials?.token
+        val baseUrl = when (cloudCredentials?.environment) {
+            "PRODUCTION" -> PRODUCTION_CLOUD_URL
+            "SANDBOX" -> CLOUD_URL
+            else -> BuildConfig.FINANCE_API_BASE_URL
+        }
         val connection = URL("$baseUrl$path")
             .openConnection() as HttpURLConnection
 

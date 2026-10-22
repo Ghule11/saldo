@@ -1,0 +1,14 @@
+name = "saldo-bank"
+main = "src/index.js"
+compatibility_date = "2026-10-22"
+workers_dev = true
+preview_urls = false
+
+[vars]
+EXPECTED_ENVIRONMENT = "PRODUCTION"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "saldo-production-state"
+database_id = "d3956e7a-5b64-43cb-8445-2020bddc13c0"
+migrations_dir = "migrations"

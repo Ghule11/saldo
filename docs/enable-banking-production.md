@@ -16,7 +16,11 @@ In Production verlangt das Formular außerdem Beschreibung, Datenschutz-E-Mail s
 
 Danach bei dieser neuen Anwendung **„Activate by linking accounts“** wählen, **Bank Austria** und das eigene Konto auswählen und die Verknüpfung bei der Bank bestätigen. Diese Verknüpfung schaltet die Anwendung im eingeschränkten Modus für genau dieses Konto frei. Sie autorisiert noch **nicht** den Datenabruf durch Saldo.
 
-## 2. Lokales Backend umstellen
+## 2. Cloud für die Nutzung ohne PC
+
+Die Production-Anwendung hat zusätzlich `https://saldo-bank.saldo-cloud-probe.workers.dev/api/banking/callback` als Rücksprungadresse. Ein eigener Cloudflare Worker mit eigener D1-Datenbank und eigenen Secrets ist bereitgestellt. Die ältere Umsatzliste ist dort verschlüsselt importiert. Für automatische neue Umsätze muss der Nutzer die Freigabe über diesen Cloud-Worker einmal im Browser abschließen. Danach kann die Android-App mit einem einmaligen Production-Code gekoppelt werden und direkt mit dem Worker sprechen. Details stehen unter [`cloud-backend.md`](cloud-backend.md).
+
+## 3. Lokales Backend umstellen
 
 Die ID der Production-Anwendung und den Pfad zu ihrem neuen privaten Schlüssel ausschließlich in lokalen .NET User Secrets speichern:
 
@@ -28,11 +32,11 @@ dotnet user-secrets set "EnableBanking:Mode" "PRODUCTION" --project backend/Fina
 
 Das Backend mit dem `https`-Profil starten: Es lauscht dabei auf `https://localhost:7129` für den Rücksprung im PC-Browser und auf `http://localhost:5006` für die App im Emulator. Ein auf dem Computer vertrauenswürdiges HTTPS-Entwicklungszertifikat für `localhost` ist nötig. `GET http://localhost:5006/api/banking/status` soll danach `environment: "PRODUCTION"`, `isConfigured: true` und `isActive: true` melden. Die Sandbox-Zugangsdaten und ihre verschlüsselte Sitzung bleiben separat erhalten. Zurück zur Sandbox geht es mit `EnableBanking:Mode` = `SANDBOX` und anschließendem Backend-Neustart.
 
-## 3. In Saldo freigeben
+## 4. In Saldo freigeben
 
 Im Android-Emulator in Saldo **Konto → Bank Austria verbinden** antippen. Saldo öffnet den Enable-Banking-/Bank-Austria-Freigabeprozess im **Browser auf dem Computer**. Die Bestätigung bei Bank Austria kann die MobileBanking-App auf dem eigenen Telefon erfordern. Nach dem Rücksprung zur lokalen Callback-Seite in Saldo **Daten aktualisieren** antippen. Bei leerer Kontoliste prüfen, ob im Control Panel **genau dasselbe Konto** verknüpft wurde.
 
-`10.0.2.2` ist die Adresse des Host-Computers aus Sicht des Android-Emulators und wird nur für die Verbindung der App zum Backend verwendet. Der Production-Callback nutzt stattdessen `https://localhost:7129` im PC-Browser. Der lokale Ablauf funktioniert nur, solange das Backend auf dem Computer läuft. Eine spätere Installation auf einem echten Telefon braucht eine andere Callback-/Backend-Lösung.
+`10.0.2.2` ist die Adresse des Host-Computers aus Sicht des Android-Emulators und wird nur für die lokale Verbindung der App zum PC-Backend verwendet. Der lokale Production-Callback nutzt `https://localhost:7129` im PC-Browser und funktioniert nur, solange das Backend auf dem Computer läuft. Für die Nutzung auf einem echten Telefon ohne PC dient der separate Cloud-Worker mit seiner HTTPS-Rücksprungadresse.
 
 Saldo speichert den Sitzungsverweis verschlüsselt unter `%LOCALAPPDATA%\Saldo` und lädt Kontostand und Umsätze über das lokale Backend. Die privaten Schlüssel, Bankzugangsdaten und Kontodaten gehören nicht in GitHub. Wenn eine Bankfreigabe ausläuft, in Saldo erneut verbinden.
 

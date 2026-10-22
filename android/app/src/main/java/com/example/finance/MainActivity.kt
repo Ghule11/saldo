@@ -1,5 +1,7 @@
 package com.example.finance
 
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -126,7 +128,7 @@ private fun FinanceApp() {
     val cloudStore = remember(context) {
         CloudConnectionStore(context.applicationContext).also { FinanceApi.configureCloud(it) }
     }
-    var cloudConnected by remember { mutableStateOf(cloudStore.token() != null) }
+    var cloudConnected by remember { mutableStateOf(cloudStore.credentials() != null) }
     var showCloudPairing by remember { mutableStateOf(false) }
     var isPairing by remember { mutableStateOf(false) }
     var pairingError by remember { mutableStateOf<String?>(null) }
@@ -187,8 +189,17 @@ private fun FinanceApp() {
         connectNotice = null
         scope.launch {
             try {
-                withContext(Dispatchers.IO) { FinanceApi.startBankAustriaAuthorization() }
-                connectNotice = "Freigabe im Browser auf deinem Computer abschließen. Danach hier Daten aktualisieren."
+                val url = withContext(Dispatchers.IO) { FinanceApi.startBankAustriaAuthorization() }
+                if (url != null) {
+                    val uri = Uri.parse(url)
+                    if (uri.scheme != "https" || uri.host.isNullOrBlank()) {
+                        throw IllegalStateException("Ungültiger Freigabe-Link.")
+                    }
+                    context.startActivity(Intent(Intent.ACTION_VIEW, uri))
+                    connectNotice = "Freigabe im Browser auf deinem Handy abschließen. Danach hier Daten aktualisieren."
+                } else {
+                    connectNotice = "Freigabe im Browser auf deinem Computer abschließen. Danach hier Daten aktualisieren."
+                }
             } catch (exception: Exception) {
                 connectError = exception.message ?: "Die Verbindung konnte nicht gestartet werden."
             } finally {
@@ -197,13 +208,13 @@ private fun FinanceApp() {
         }
     }
 
-    fun pairCloud(code: String) {
+    fun pairCloud(code: String, environment: String) {
         if (isPairing) return
         isPairing = true
         pairingError = null
         scope.launch {
             try {
-                withContext(Dispatchers.IO) { FinanceApi.pairCloud(code) }
+                withContext(Dispatchers.IO) { FinanceApi.pairCloud(code, environment) }
                 cloudConnected = true
                 showCloudPairing = false
                 reloadKey++
@@ -346,7 +357,7 @@ private fun FinanceApp() {
                 merchantRules, subscriptionDecisions, ::removeMerchantRule, ::resetSubscriptionDecision,
                 bankingStatus, isLoading,
                 isConnecting, errorMessage, connectError, connectNotice, { reloadKey++ },
-                { startBankConnection() }, cloudConnected,
+                { startBankConnection() }, cloudConnected, FinanceApi.cloudEnvironment(),
                 { showCloudPairing = true },
                 {
                     scope.launch {
@@ -438,7 +449,7 @@ private fun ConnectionErrorScreen(
             ActionButton("Erneut versuchen", onRetry)
             if (onCloudPair != null) {
                 Spacer(Modifier.height(12.dp))
-                ActionButton("Cloud-Testverbindung koppeln", onCloudPair)
+                ActionButton("Cloud verbinden", onCloudPair)
             }
             if (onConnect != null) {
                 Spacer(Modifier.height(12.dp))
@@ -450,20 +461,29 @@ private fun ConnectionErrorScreen(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun CloudPairingDialog(
     isPairing: Boolean,
     error: String?,
     onDismiss: () -> Unit,
-    onPair: (String) -> Unit
+    onPair: (String, String) -> Unit
 ) {
     var code by remember { mutableStateOf("") }
+    var environment by remember { mutableStateOf("PRODUCTION") }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Cloud-Testverbindung") },
         text = {
             Column {
                 Text("Gib den einmaligen Kopplungscode ein. Er ist zehn Minuten gültig.")
+                Spacer(Modifier.height(10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(selected = environment == "PRODUCTION",
+                        onClick = { environment = "PRODUCTION" }, label = { Text("Bank Austria") })
+                    FilterChip(selected = environment == "SANDBOX",
+                        onClick = { environment = "SANDBOX" }, label = { Text("Testdaten") })
+                }
                 Spacer(Modifier.height(12.dp))
                 OutlinedTextField(
                     value = code,
@@ -475,7 +495,7 @@ private fun CloudPairingDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = { onPair(code) }, enabled = !isPairing && code.isNotBlank()) {
+            TextButton(onClick = { onPair(code, environment) }, enabled = !isPairing && code.isNotBlank()) {
                 Text(if (isPairing) "Verbinde …" else "Verbinden")
             }
         },
@@ -803,6 +823,7 @@ private fun AccountScreen(
     onRefresh: () -> Unit,
     onConnect: () -> Unit,
     cloudConnected: Boolean,
+    cloudEnvironment: String?,
     onCloudPair: () -> Unit,
     onCloudDisconnect: () -> Unit,
     modifier: Modifier
@@ -816,10 +837,12 @@ private fun AccountScreen(
         item { DataSourceBanner(data) }
         item {
             PanelCard {
-                SectionHeading("Cloud-Testverbindung", if (cloudConnected) "Gekoppelt" else "Nicht gekoppelt")
+                SectionHeading("Cloud-Verbindung", if (cloudConnected) "Gekoppelt" else "Nicht gekoppelt")
                 Spacer(Modifier.height(8.dp))
-                Text(if (cloudConnected) "Testdaten sind auch ohne laufenden PC erreichbar."
-                    else "Einmaligen Kopplungscode eingeben, um die Sandbox unterwegs zu nutzen.",
+                Text(if (cloudEnvironment == "PRODUCTION")
+                    "Bankdaten sind auch ohne laufenden PC erreichbar."
+                    else if (cloudConnected) "Testdaten sind auch ohne laufenden PC erreichbar."
+                    else "Einmaligen Kopplungscode eingeben, um Saldo unterwegs zu nutzen.",
                     color = Muted, fontSize = 12.sp)
                 Spacer(Modifier.height(10.dp))
                 ActionButton(if (cloudConnected) "Cloud trennen" else "Cloud koppeln",

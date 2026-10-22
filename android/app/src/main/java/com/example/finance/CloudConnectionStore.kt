@@ -4,6 +4,7 @@ import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
+import org.json.JSONObject
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -14,20 +15,28 @@ class CloudConnectionStore(context: Context) {
     private val preferences = context.getSharedPreferences("saldo_cloud_connection", Context.MODE_PRIVATE)
     private val alias = "saldo_cloud_device_token"
 
-    fun token(): String? = runCatching {
+    data class Credentials(val token: String, val environment: String)
+
+    fun credentials(): Credentials? = runCatching {
         val stored = preferences.getString("token", null) ?: return null
         val bytes = Base64.decode(stored, Base64.NO_WRAP)
         if (bytes.size < 13) return null
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, bytes.copyOfRange(0, 12)))
-        String(cipher.doFinal(bytes.copyOfRange(12, bytes.size)), Charsets.UTF_8)
+        val plaintext = String(cipher.doFinal(bytes.copyOfRange(12, bytes.size)), Charsets.UTF_8)
+        if (plaintext.startsWith("{")) {
+            val json = JSONObject(plaintext)
+            Credentials(json.getString("token"), json.getString("environment"))
+        } else Credentials(plaintext, "SANDBOX")
     }.getOrNull()
 
-    fun save(token: String) {
+    fun save(token: String, environment: String) {
         require(Regex("^[A-Za-z0-9_-]{43}$").matches(token))
+        require(environment in setOf("SANDBOX", "PRODUCTION"))
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, key())
-        val stored = cipher.iv + cipher.doFinal(token.toByteArray(Charsets.UTF_8))
+        val plaintext = JSONObject().put("token", token).put("environment", environment).toString()
+        val stored = cipher.iv + cipher.doFinal(plaintext.toByteArray(Charsets.UTF_8))
         check(preferences.edit().putString("token", Base64.encodeToString(stored, Base64.NO_WRAP)).commit())
     }
 

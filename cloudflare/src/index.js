@@ -2,6 +2,8 @@ const encoder = new TextEncoder();
 const providerUrl = "https://api.enablebanking.com/application";
 const providerBaseUrl = "https://api.enablebanking.com";
 const callbackPath = "/api/banking/callback";
+const validMode = env => ["SANDBOX", "PRODUCTION"].includes(env.EXPECTED_ENVIRONMENT);
+const sessionName = env => `${env.EXPECTED_ENVIRONMENT.toLowerCase()}_session`;
 
 export default {
   async fetch(request, env) {
@@ -11,7 +13,7 @@ export default {
     }
 
     if (request.method === "GET" && url.pathname === callbackPath) {
-      return finishSandboxAuthorization(url, env);
+      return finishAuthorization(url, env);
     }
 
     if (request.method === "POST" && url.pathname === "/api/pairing/claim") {
@@ -24,25 +26,27 @@ export default {
 
     const knownGet = request.method === "GET" && [
       "/api/probe", "/api/storage-probe", "/api/banking/status", "/api/banking/institutions",
-      "/api/banking/data", "/api/pairing/devices"
+      "/api/banking/data", "/api/pairing/devices", "/api/history"
     ].includes(url.pathname);
     const knownPost = request.method === "POST" &&
       ["/api/banking/authorization", "/api/pairing/code", "/api/pairing/revoke",
-        "/api/pairing/self-revoke"]
+        "/api/pairing/self-revoke", "/api/history/import",
+        "/api/banking/authorization/bank-austria"]
         .includes(url.pathname);
     if (!knownGet && !knownPost) {
       return json({ error: "Not found" }, 404);
     }
 
     const isAdmin = hasProbeToken(request, env.PROBE_TOKEN);
-    const deviceAllowed = ["/api/banking/status", "/api/banking/data",
-      "/api/pairing/self-revoke"].includes(url.pathname);
+    const deviceAllowed = ["/api/banking/status", "/api/banking/data", "/api/history",
+      "/api/pairing/self-revoke", "/api/banking/authorization/bank-austria"]
+      .includes(url.pathname);
     if (!isAdmin && (!deviceAllowed || !await hasDeviceToken(request, env))) {
       return json({ error: "Unauthorized" }, 401);
     }
 
     if (!env.EB_APPLICATION_ID || !env.EB_PRIVATE_KEY) {
-      return json({ error: "Sandbox credentials are not configured" }, 503);
+      return json({ error: "Banking credentials are not configured" }, 503);
     }
 
     try {
@@ -61,6 +65,14 @@ export default {
       if (url.pathname === "/api/pairing/self-revoke") {
         return json(await selfRevokeDevice(request, env));
       }
+      if (url.pathname === "/api/history") {
+        return json(env.EXPECTED_ENVIRONMENT === "PRODUCTION"
+          ? await readEncryptedState(env, "production_history") || { available: false }
+          : { available: false });
+      }
+      if (url.pathname === "/api/history/import") {
+        return json(await importHistory(request, env));
+      }
       if (url.pathname === "/api/storage-probe") {
         if (!env.DB || !env.DATA_ENCRYPTION_KEY) {
           return json({ error: "Encrypted storage is not configured" }, 503);
@@ -69,21 +81,24 @@ export default {
       }
 
       if (url.pathname.startsWith("/api/banking/")) {
-        if (!env.DB || !env.DATA_ENCRYPTION_KEY || env.EXPECTED_ENVIRONMENT !== "SANDBOX") {
-          return json({ error: "Sandbox storage is not configured" }, 503);
+        if (!env.DB || !env.DATA_ENCRYPTION_KEY || !validMode(env)) {
+          return json({ error: "Banking storage is not configured" }, 503);
         }
-        const provider = createProviderClient(env);
+        const provider = createProviderClient(env, request);
         if (url.pathname === "/api/banking/status") {
-          return json(await sandboxStatus(env, provider));
+          return json(await bankingStatus(env, provider));
         }
         if (url.pathname === "/api/banking/institutions") {
-          return json(await sandboxInstitutions(provider, url.searchParams.get("country")));
+          return json(await bankingInstitutions(env, provider, url.searchParams.get("country")));
         }
         if (url.pathname === "/api/banking/authorization") {
-          return json(await startSandboxAuthorization(request, url, env, provider));
+          return json(await startAuthorization(request, url, env, provider));
+        }
+        if (url.pathname === "/api/banking/authorization/bank-austria") {
+          return json(await startBankAustriaAuthorization(url, env, provider));
         }
         if (url.pathname === "/api/banking/data") {
-          return json(await sandboxData(env, provider, url.searchParams.get("allTransactions") === "true"));
+          return json(await bankingData(env, provider, url.searchParams.get("allTransactions") === "true"));
         }
       }
 
@@ -111,7 +126,7 @@ export default {
         return json({ detail: error.message }, error.status);
       }
       // Keep provider responses, key material and internal errors out of public replies.
-      return json({ error: "Sandbox probe failed" }, 503);
+      return json({ error: "Banking request failed" }, 503);
     }
   }
 };
@@ -147,7 +162,7 @@ async function probeEncryptedStorage(env) {
 }
 
 async function createPairingCode(env) {
-  if (!env.DB || env.EXPECTED_ENVIRONMENT !== "SANDBOX") {
+  if (!env.DB || !validMode(env)) {
     throw new SandboxError(503, "Kopplung ist nicht eingerichtet.");
   }
   const code = base64Url(crypto.getRandomValues(new Uint8Array(16)));
@@ -159,7 +174,7 @@ async function createPairingCode(env) {
 }
 
 async function claimPairingCode(request, env) {
-  if (!env.DB || env.EXPECTED_ENVIRONMENT !== "SANDBOX") {
+  if (!env.DB || !validMode(env)) {
     throw new SandboxError(503, "Kopplung ist nicht eingerichtet.");
   }
   let body;
@@ -207,7 +222,7 @@ async function selfRevokeDevice(request, env) {
 }
 
 async function hasDeviceToken(request, env) {
-  if (!env.DB || env.EXPECTED_ENVIRONMENT !== "SANDBOX") return false;
+  if (!env.DB || !validMode(env)) return false;
   const authorization = request.headers.get("Authorization") || "";
   const token = authorization.startsWith("Bearer ") ? authorization.slice(7) : "";
   if (!/^[A-Za-z0-9_-]{43}$/.test(token)) return false;
@@ -221,22 +236,76 @@ async function sha256(value) {
   return base64Url(new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(value))));
 }
 
-function createProviderClient(env) {
+async function importHistory(request, env) {
+  if (!env.DB || !env.DATA_ENCRYPTION_KEY || env.EXPECTED_ENVIRONMENT !== "PRODUCTION") {
+    throw new SandboxError(503, "Historienimport ist nicht eingerichtet.");
+  }
+  const raw = await request.text();
+  if (raw.length > 5_000_000) throw new SandboxError(413, "Umsatzliste ist zu groß.");
+  let input;
+  try { input = JSON.parse(raw); } catch {
+    throw new SandboxError(400, "Ungültige Umsatzliste.");
+  }
+  if (!Array.isArray(input?.transactions) || input.transactions.length === 0 ||
+      input.transactions.length > 20_000 || !/^[A-Z]{3}$/.test(input.currency || "")) {
+    throw new SandboxError(400, "Ungültige Umsatzliste.");
+  }
+  const transactions = input.transactions.map(item => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(item?.bookingDate || "") ||
+        !Number.isSafeInteger(item?.amountCents) ||
+        typeof item?.merchant !== "string" || item.merchant.length > 500 ||
+        typeof item?.detail !== "string" || item.detail.length > 4000 ||
+        typeof item?.identity !== "string" || item.identity.length > 500) {
+      throw new SandboxError(400, "Ungültige Buchung in der Umsatzliste.");
+    }
+    return {
+      bookingDate: item.bookingDate,
+      amountCents: item.amountCents,
+      merchant: item.merchant,
+      detail: item.detail,
+      identity: item.identity
+    };
+  });
+  await writeEncryptedState(env, "production_history", {
+    currency: input.currency,
+    importedAt: new Date().toISOString(),
+    firstBookingDate: transactions.reduce((date, item) =>
+      item.bookingDate < date ? item.bookingDate : date, transactions[0].bookingDate),
+    lastBookingDate: transactions.reduce((date, item) =>
+      item.bookingDate > date ? item.bookingDate : date, transactions[0].bookingDate),
+    transactions
+  });
+  return { imported: transactions.length };
+}
+
+function createProviderClient(env, request = null) {
   let jwt;
   return async (method, path, body) => {
     jwt ||= createEnableBankingJwt(env.EB_APPLICATION_ID, env.EB_PRIVATE_KEY);
+    const psuHeaders = {};
+    if (path.startsWith("/accounts/") && request && env.EXPECTED_ENVIRONMENT === "PRODUCTION") {
+      const userAgent = request.headers.get("Psu-User-Agent") || "Saldo/1.0 (Android)";
+      const ipAddress = request.headers.get("CF-Connecting-IP") || "";
+      if (userAgent.length <= 256 && !/[\r\n]/.test(userAgent)) {
+        psuHeaders["Psu-User-Agent"] = userAgent;
+      }
+      if (/^[0-9a-fA-F:.]{2,45}$/.test(ipAddress)) {
+        psuHeaders["Psu-Ip-Address"] = ipAddress;
+      }
+    }
     const response = await fetch(`${providerBaseUrl}${path}`, {
       method,
       headers: {
         Accept: "application/json",
         Authorization: `Bearer ${await jwt}`,
+        ...psuHeaders,
         ...(body ? { "Content-Type": "application/json" } : {})
       },
       ...(body ? { body: JSON.stringify(body) } : {})
     });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) {
-      console.warn("Sandbox provider status", response.status,
+      console.warn("Banking provider status", response.status,
         typeof result.error === "string" ? result.error : "PROVIDER_ERROR");
       throw new SandboxError(response.status === 429 ? 429 : 502,
         "Enable Banking konnte die Testanfrage nicht abschließen.");
@@ -245,44 +314,45 @@ function createProviderClient(env) {
   };
 }
 
-async function requireActiveSandbox(provider) {
+async function requireActiveApplication(env, provider) {
   const application = await provider("GET", "/application");
-  if (String(application.environment || "").toUpperCase() !== "SANDBOX") {
-    throw new SandboxError(409, "Die hinterlegte Anwendung gehört nicht zur Sandbox.");
+  if (String(application.environment || "").toUpperCase() !== env.EXPECTED_ENVIRONMENT) {
+    throw new SandboxError(409, "Die hinterlegte Anwendung hat die falsche Umgebung.");
   }
   if (application.active !== true) {
-    throw new SandboxError(409, "Die Sandbox-Anwendung ist nicht aktiv.");
+    throw new SandboxError(409, "Die Enable-Banking-Anwendung ist nicht aktiv.");
   }
   return application;
 }
 
-async function sandboxStatus(env, provider) {
+async function bankingStatus(env, provider) {
   const application = await provider("GET", "/application");
-  if (String(application.environment || "").toUpperCase() !== "SANDBOX") {
-    throw new SandboxError(409, "Die hinterlegte Anwendung gehört nicht zur Sandbox.");
+  if (String(application.environment || "").toUpperCase() !== env.EXPECTED_ENVIRONMENT) {
+    throw new SandboxError(409, "Die hinterlegte Anwendung hat die falsche Umgebung.");
   }
-  const session = await readEncryptedState(env, "sandbox_session");
+  const session = await readEncryptedState(env, sessionName(env));
+  const rateLimit = await readEncryptedState(env, `${env.EXPECTED_ENVIRONMENT.toLowerCase()}_rate_limit`);
   return {
     isConfigured: true,
-    isSandbox: true,
-    environment: "SANDBOX",
+    isSandbox: env.EXPECTED_ENVIRONMENT === "SANDBOX",
+    environment: env.EXPECTED_ENVIRONMENT,
     institutionName: session?.institutionName || null,
     institutionCountry: session?.institutionCountry || null,
     accountCount: session?.accountUids?.length || 0,
     isActive: application.active === true,
-    retryAfter: null
+    retryAfter: rateLimit?.until > Date.now() ? new Date(rateLimit.until).toISOString() : null
   };
 }
 
-async function sandboxInstitutions(provider, country) {
-  await requireActiveSandbox(provider);
+async function bankingInstitutions(env, provider, country) {
+  await requireActiveApplication(env, provider);
   const result = await provider("GET", "/aspsps");
   const institutions = Array.isArray(result.aspsps) ? result.aspsps : [];
   return institutions.filter(item => !country ||
     String(item.country || "").toUpperCase() === country.toUpperCase());
 }
 
-async function startSandboxAuthorization(request, url, env, provider) {
+async function startAuthorization(request, url, env, provider) {
   let body;
   try { body = await request.json(); } catch {
     throw new SandboxError(400, "Ungültige Anfrage.");
@@ -290,14 +360,30 @@ async function startSandboxAuthorization(request, url, env, provider) {
   const name = String(body?.institutionName || "").trim();
   const country = String(body?.country || "").trim().toUpperCase();
   if (!name || name.length > 160 || !/^[A-Z]{2}$/.test(country)) {
-    throw new SandboxError(400, "Name der Testbank und Land sind erforderlich.");
+    throw new SandboxError(400, "Name der Bank und Land sind erforderlich.");
   }
-  const institutions = await sandboxInstitutions(provider, country);
+  const institutions = await bankingInstitutions(env, provider, country);
   const institution = institutions.find(item =>
     String(item.name || "").toLowerCase() === name.toLowerCase() &&
     String(item.country || "").toUpperCase() === country);
-  if (!institution) throw new SandboxError(400, "Diese Testbank ist nicht verfügbar.");
+  if (!institution) throw new SandboxError(400, "Diese Bank ist nicht verfügbar.");
 
+  return createAuthorization(url, env, provider, institution);
+}
+
+async function startBankAustriaAuthorization(url, env, provider) {
+  if (env.EXPECTED_ENVIRONMENT !== "PRODUCTION") {
+    throw new SandboxError(409, "Bank Austria benötigt die Production-Anwendung.");
+  }
+  const matches = (await bankingInstitutions(env, provider, "AT"))
+    .filter(item => String(item.name || "").includes("Bank Austria"));
+  if (matches.length !== 1) {
+    throw new SandboxError(409, "Bank Austria wurde nicht eindeutig gefunden.");
+  }
+  return createAuthorization(url, env, provider, matches[0]);
+}
+
+async function createAuthorization(url, env, provider, institution) {
   const consentSeconds = Math.min(30 * 24 * 60 * 60,
     Number(institution.maximum_consent_validity) > 0
       ? Number(institution.maximum_consent_validity) : 30 * 24 * 60 * 60);
@@ -309,7 +395,7 @@ async function startSandboxAuthorization(request, url, env, provider) {
       transactions: true,
       valid_until: new Date(Date.now() + consentSeconds * 1000).toISOString()
     },
-    aspsp: { name: institution.name, country },
+    aspsp: { name: institution.name, country: institution.country },
     state,
     redirect_url: redirectUrl,
     psu_type: "personal"
@@ -320,14 +406,14 @@ async function startSandboxAuthorization(request, url, env, provider) {
 
   await env.DB.prepare(
     "INSERT INTO pending_authorizations (state, institution_name, institution_country, expires_at) VALUES (?, ?, ?, ?)"
-  ).bind(state, institution.name, country, Date.now() + 10 * 60 * 1000).run();
+  ).bind(state, institution.name, institution.country, Date.now() + 10 * 60 * 1000).run();
   return { url: authorization.url, state, redirectUrl };
 }
 
-async function finishSandboxAuthorization(url, env) {
+async function finishAuthorization(url, env) {
   if (!env.DB || !env.DATA_ENCRYPTION_KEY || !env.EB_APPLICATION_ID ||
-      !env.EB_PRIVATE_KEY || env.EXPECTED_ENVIRONMENT !== "SANDBOX") {
-    return callbackPage("Testverbindung ist nicht eingerichtet.", 503);
+      !env.EB_PRIVATE_KEY || !validMode(env)) {
+    return callbackPage("Bankverbindung ist nicht eingerichtet.", 503);
   }
   const state = url.searchParams.get("state") || "";
   if (!/^[0-9a-f-]{36}$/i.test(state)) {
@@ -338,47 +424,56 @@ async function finishSandboxAuthorization(url, env) {
       "DELETE FROM pending_authorizations WHERE state = ? RETURNING institution_name, institution_country, expires_at"
     ).bind(state).first();
     if (!pending || pending.expires_at < Date.now()) {
-      return callbackPage("Testfreigabe abgelaufen. Starte sie erneut.", 400);
+      return callbackPage("Bankfreigabe abgelaufen. Starte sie erneut.", 400);
     }
-    if (url.searchParams.has("error")) return callbackPage("Testfreigabe abgebrochen.", 400);
+    if (url.searchParams.has("error")) return callbackPage("Bankfreigabe abgebrochen.", 400);
     const code = url.searchParams.get("code") || "";
     if (!code || code.length > 2048) {
-      return callbackPage("Testfreigabe nicht abgeschlossen.", 400);
+      return callbackPage("Bankfreigabe nicht abgeschlossen.", 400);
     }
     const provider = createProviderClient(env);
-    await requireActiveSandbox(provider);
+    await requireActiveApplication(env, provider);
     const result = await provider("POST", "/sessions", { code });
     const accountUids = [...new Set((Array.isArray(result.accounts) ? result.accounts : [])
       .map(account => account?.uid).filter(uid => typeof uid === "string" && uid))];
     if (!result.session_id || accountUids.length === 0) {
-      return callbackPage("Die Testbank hat kein nutzbares Konto geliefert.", 502);
+      return callbackPage("Die Bank hat kein nutzbares Konto geliefert.", 502);
     }
-    await writeEncryptedState(env, "sandbox_session", {
+    await writeEncryptedState(env, sessionName(env), {
       sessionId: result.session_id,
       institutionName: pending.institution_name,
       institutionCountry: pending.institution_country,
       accountUids
     });
-    return callbackPage("Testkonto verbunden. Kehre zu Saldo zurück.", 200);
+    return callbackPage("Konto verbunden. Kehre zu Saldo zurück.", 200);
   } catch (error) {
-    console.warn("Sandbox callback failed", error?.name || "UnknownError");
-    return callbackPage("Testkonto konnte nicht verbunden werden.", 502);
+    console.warn("Banking callback failed", error?.name || "UnknownError");
+    return callbackPage("Konto konnte nicht verbunden werden.", 502);
   }
 }
 
-async function sandboxData(env, provider, allTransactions) {
-  const session = await readEncryptedState(env, "sandbox_session");
+async function bankingData(env, provider, allTransactions) {
+  const session = await readEncryptedState(env, sessionName(env));
   if (!session?.sessionId || !Array.isArray(session.accountUids) || session.accountUids.length === 0) {
-    throw new SandboxError(409, "Zuerst ein Testkonto verbinden.");
+    throw new SandboxError(409, "Zuerst ein Konto verbinden.");
   }
 
   const sessionHash = base64Url(new Uint8Array(await crypto.subtle.digest(
     "SHA-256", encoder.encode(session.sessionId))));
-  const cacheName = `sandbox_data:${sessionHash}:${allTransactions ? "all" : "recent"}`;
+  const cacheName = `${env.EXPECTED_ENVIRONMENT.toLowerCase()}_data:${sessionHash}:${allTransactions ? "all" : "recent"}`;
   const cached = await readEncryptedState(env, cacheName);
   const cacheAge = Date.now() - Date.parse(cached?.fetchedAt || "");
   if (cached && cacheAge >= 0 && cacheAge < 12 * 60 * 60 * 1000) {
     return { ...cached, isCached: true };
+  }
+
+  const rateLimitName = `${env.EXPECTED_ENVIRONMENT.toLowerCase()}_rate_limit`;
+  const rateLimit = await readEncryptedState(env, rateLimitName);
+  if (rateLimit?.until > Date.now()) {
+    if (cached && cacheAge >= 0 && cacheAge < 24 * 60 * 60 * 1000) {
+      return { ...cached, isCached: true };
+    }
+    throw new SandboxError(429, "Die Bank erlaubt derzeit keinen weiteren Abruf.");
   }
 
   try {
@@ -389,24 +484,29 @@ async function sandboxData(env, provider, allTransactions) {
       const collected = [];
       const seenKeys = new Set();
       let continuationKey = null;
-      const maxPages = allTransactions ? 100 : 10;
+      const maxPages = allTransactions ? 100 : env.EXPECTED_ENVIRONMENT === "PRODUCTION" ? 1 : 10;
       for (let page = 0; page < maxPages; page++) {
         const suffix = continuationKey
           ? `?continuation_key=${encodeURIComponent(continuationKey)}` : "";
         const response = await provider("GET", `${path}/transactions${suffix}`);
         if (!Array.isArray(response.transactions)) {
-          throw new SandboxError(502, "Die Testbank hat ungültige Umsätze geliefert.");
+          throw new SandboxError(502, "Die Bank hat ungültige Umsätze geliefert.");
         }
         collected.push(...response.transactions);
         continuationKey = typeof response.continuation_key === "string" &&
           response.continuation_key ? response.continuation_key : null;
         if (!continuationKey) break;
-        if (seenKeys.has(continuationKey) || page === maxPages - 1) {
-          throw new SandboxError(502, "Die Testumsätze konnten nicht vollständig geladen werden.");
+        if (seenKeys.has(continuationKey)) {
+          throw new SandboxError(502, "Die Umsätze konnten nicht vollständig geladen werden.");
+        }
+        if (page === maxPages - 1 && env.EXPECTED_ENVIRONMENT === "PRODUCTION" &&
+            !allTransactions) break;
+        if (page === maxPages - 1) {
+          throw new SandboxError(502, "Die Umsätze konnten nicht vollständig geladen werden.");
         }
         seenKeys.add(continuationKey);
       }
-      accounts.push({ balances, transactions: { transactions: collected, continuation_key: null } });
+      accounts.push({ balances, transactions: { transactions: collected, continuation_key: continuationKey } });
     }
 
     const result = {
@@ -419,9 +519,11 @@ async function sandboxData(env, provider, allTransactions) {
     await writeEncryptedState(env, cacheName, result);
     return result;
   } catch (error) {
-    if (error instanceof SandboxError && error.status === 429 &&
-        cached && cacheAge >= 0 && cacheAge < 24 * 60 * 60 * 1000) {
-      return { ...cached, isCached: true };
+    if (error instanceof SandboxError && error.status === 429) {
+      await writeEncryptedState(env, rateLimitName, { until: Date.now() + 6 * 60 * 60 * 1000 });
+      if (cached && cacheAge >= 0 && cacheAge < 24 * 60 * 60 * 1000) {
+        return { ...cached, isCached: true };
+      }
     }
     throw error;
   }
