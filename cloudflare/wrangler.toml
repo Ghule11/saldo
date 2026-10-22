@@ -5,3 +5,9 @@ workers_dev = true
 
 [vars]
 EXPECTED_ENVIRONMENT = "SANDBOX"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "saldo-sandbox-state"
+database_id = "2a70d2ee-fedc-40e2-87a2-589d8e082028"
+migrations_dir = "migrations"

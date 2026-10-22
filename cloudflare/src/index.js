@@ -8,7 +8,8 @@ export default {
       return json({ status: "ok" });
     }
 
-    if (request.method !== "GET" || url.pathname !== "/api/probe") {
+    if (request.method !== "GET" ||
+        (url.pathname !== "/api/probe" && url.pathname !== "/api/storage-probe")) {
       return json({ error: "Not found" }, 404);
     }
 
@@ -21,6 +22,13 @@ export default {
     }
 
     try {
+      if (url.pathname === "/api/storage-probe") {
+        if (!env.DB || !env.DATA_ENCRYPTION_KEY) {
+          return json({ error: "Encrypted storage is not configured" }, 503);
+        }
+        return json(await probeEncryptedStorage(env));
+      }
+
       const token = await createEnableBankingJwt(env.EB_APPLICATION_ID, env.EB_PRIVATE_KEY);
       const response = await fetch(providerUrl, {
         headers: {
@@ -46,6 +54,36 @@ export default {
     }
   }
 };
+
+async function probeEncryptedStorage(env) {
+  const name = `probe:${crypto.randomUUID()}`;
+  const marker = crypto.randomUUID();
+  const keyBytes = decodeBase64Url(env.DATA_ENCRYPTION_KEY);
+  if (keyBytes.length !== 32) throw new Error("Invalid encryption key");
+  const key = await crypto.subtle.importKey("raw", keyBytes, "AES-GCM", false,
+    ["encrypt", "decrypt"]);
+  const nonce = crypto.getRandomValues(new Uint8Array(12));
+  const encrypted = new Uint8Array(await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv: nonce }, key, encoder.encode(marker)));
+  const combined = new Uint8Array(nonce.length + encrypted.length);
+  combined.set(nonce);
+  combined.set(encrypted, nonce.length);
+
+  try {
+    await env.DB.prepare("INSERT INTO app_state (name, encrypted_value) VALUES (?, ?)")
+      .bind(name, base64Url(combined)).run();
+    const row = await env.DB.prepare("SELECT encrypted_value FROM app_state WHERE name = ?")
+      .bind(name).first();
+    if (!row) throw new Error("Missing encrypted marker");
+    const saved = decodeBase64Url(row.encrypted_value);
+    const plain = await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: saved.slice(0, 12) }, key, saved.slice(12));
+    if (new TextDecoder().decode(plain) !== marker) throw new Error("Storage mismatch");
+    return { status: "ok", storage: "encrypted_d1" };
+  } finally {
+    await env.DB.prepare("DELETE FROM app_state WHERE name = ?").bind(name).run();
+  }
+}
 
 function hasProbeToken(request, expected) {
   if (typeof expected !== "string" || expected.length < 32) return false;
@@ -96,6 +134,11 @@ function base64Url(bytes) {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function decodeBase64Url(value) {
+  const binary = atob(value.replace(/-/g, "+").replace(/_/g, "/"));
+  return Uint8Array.from(binary, character => character.charCodeAt(0));
 }
 
 function json(body, status = 200) {
