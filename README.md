@@ -6,6 +6,7 @@ Private, Android-only personal finance app. The GitHub repository is named `fina
 
 - `android/` — Kotlin and Jetpack Compose Android app
 - `backend/` — ASP.NET Core API
+- `cloudflare/` — sandbox-only probe for a future PC-independent backend
 
 ## Current app state
 
@@ -22,6 +23,8 @@ The provider is Enable Banking. Keep provider private keys, banking credentials,
 The backend includes a sandbox-only Enable Banking authorization flow. When a sandbox account is connected, the Android app loads all available transaction pages before calculating monthly totals and charts. It labels the historical month shown, so synthetic data is not presented as current account activity. The connected Mock ASPSP data is synthetic. See [`docs/enable-banking-sandbox.md`](docs/enable-banking-sandbox.md) for local sandbox setup.
 
 The app and backend support Bank Austria account authorization through a separate, restricted Enable Banking production application. Each user must register that production application, link their own account in the Control Panel, and then authorize the account in Saldo. The sandbox and production sessions are stored separately. The displayed transaction history is limited to the dates returned by the bank connection; older history may require a separate statement import. See [`docs/enable-banking-production.md`](docs/enable-banking-production.md) for the exact steps and emulator limitation.
+
+A first Cloudflare Worker probe checks whether the free hosting tier can sign Enable Banking requests and reach the sandbox application. It does not connect the Android app or access bank data. See [`docs/cloud-backend.md`](docs/cloud-backend.md). The local backend is still required for the current Android build.
 
 Successful bank responses are encrypted in a local backend cache to reduce repeat requests. A temporary provider rate limit shows the last saved bank response if one exists, or a clear retry message; it never substitutes sample transactions for production bank data.
 

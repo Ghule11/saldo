@@ -15,3 +15,6 @@ local.properties
 .env
 .env.*
 **/appsettings.Development.json
+node_modules/
+.wrangler/
+.dev.vars*
