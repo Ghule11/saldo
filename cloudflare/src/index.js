@@ -14,17 +14,30 @@ export default {
       return finishSandboxAuthorization(url, env);
     }
 
+    if (request.method === "POST" && url.pathname === "/api/pairing/claim") {
+      try { return json(await claimPairingCode(request, env)); }
+      catch (error) {
+        return error instanceof SandboxError ? json({ detail: error.message }, error.status)
+          : json({ error: "Pairing failed" }, 503);
+      }
+    }
+
     const knownGet = request.method === "GET" && [
       "/api/probe", "/api/storage-probe", "/api/banking/status", "/api/banking/institutions",
-      "/api/banking/data"
+      "/api/banking/data", "/api/pairing/devices"
     ].includes(url.pathname);
     const knownPost = request.method === "POST" &&
-      url.pathname === "/api/banking/authorization";
+      ["/api/banking/authorization", "/api/pairing/code", "/api/pairing/revoke",
+        "/api/pairing/self-revoke"]
+        .includes(url.pathname);
     if (!knownGet && !knownPost) {
       return json({ error: "Not found" }, 404);
     }
 
-    if (!hasProbeToken(request, env.PROBE_TOKEN)) {
+    const isAdmin = hasProbeToken(request, env.PROBE_TOKEN);
+    const deviceAllowed = ["/api/banking/status", "/api/banking/data",
+      "/api/pairing/self-revoke"].includes(url.pathname);
+    if (!isAdmin && (!deviceAllowed || !await hasDeviceToken(request, env))) {
       return json({ error: "Unauthorized" }, 401);
     }
 
@@ -33,6 +46,21 @@ export default {
     }
 
     try {
+      if (url.pathname === "/api/pairing/code") {
+        return json(await createPairingCode(env));
+      }
+      if (url.pathname === "/api/pairing/devices") {
+        const result = await env.DB.prepare(
+          "SELECT id, created_at, revoked_at FROM devices ORDER BY created_at DESC"
+        ).all();
+        return json({ devices: result.results || [] });
+      }
+      if (url.pathname === "/api/pairing/revoke") {
+        return json(await revokeDevice(request, env));
+      }
+      if (url.pathname === "/api/pairing/self-revoke") {
+        return json(await selfRevokeDevice(request, env));
+      }
       if (url.pathname === "/api/storage-probe") {
         if (!env.DB || !env.DATA_ENCRYPTION_KEY) {
           return json({ error: "Encrypted storage is not configured" }, 503);
@@ -116,6 +144,81 @@ async function probeEncryptedStorage(env) {
   } finally {
     await env.DB.prepare("DELETE FROM app_state WHERE name = ?").bind(name).run();
   }
+}
+
+async function createPairingCode(env) {
+  if (!env.DB || env.EXPECTED_ENVIRONMENT !== "SANDBOX") {
+    throw new SandboxError(503, "Kopplung ist nicht eingerichtet.");
+  }
+  const code = base64Url(crypto.getRandomValues(new Uint8Array(16)));
+  const codeHash = await sha256(code);
+  const expiresAt = Date.now() + 10 * 60 * 1000;
+  await env.DB.prepare("INSERT INTO pairing_codes (code_hash, expires_at) VALUES (?, ?)")
+    .bind(codeHash, expiresAt).run();
+  return { code, expiresAt: new Date(expiresAt).toISOString() };
+}
+
+async function claimPairingCode(request, env) {
+  if (!env.DB || env.EXPECTED_ENVIRONMENT !== "SANDBOX") {
+    throw new SandboxError(503, "Kopplung ist nicht eingerichtet.");
+  }
+  let body;
+  try { body = await request.json(); } catch {
+    throw new SandboxError(400, "Ungültige Anfrage.");
+  }
+  const code = String(body?.code || "").trim();
+  if (!/^[A-Za-z0-9_-]{22}$/.test(code)) {
+    throw new SandboxError(400, "Ungültiger Kopplungscode.");
+  }
+  const pending = await env.DB.prepare(
+    "DELETE FROM pairing_codes WHERE code_hash = ? RETURNING expires_at"
+  ).bind(await sha256(code)).first();
+  if (!pending || pending.expires_at < Date.now()) {
+    throw new SandboxError(400, "Kopplungscode abgelaufen oder bereits verwendet.");
+  }
+  const token = base64Url(crypto.getRandomValues(new Uint8Array(32)));
+  const deviceId = crypto.randomUUID();
+  await env.DB.prepare("INSERT INTO devices (id, token_hash, created_at) VALUES (?, ?, ?)")
+    .bind(deviceId, await sha256(token), Date.now()).run();
+  return { deviceId, token };
+}
+
+async function revokeDevice(request, env) {
+  if (!env.DB) throw new SandboxError(503, "Kopplung ist nicht eingerichtet.");
+  let body;
+  try { body = await request.json(); } catch {
+    throw new SandboxError(400, "Ungültige Anfrage.");
+  }
+  const deviceId = String(body?.deviceId || "");
+  if (!/^[0-9a-f-]{36}$/i.test(deviceId)) {
+    throw new SandboxError(400, "Ungültiges Gerät.");
+  }
+  const result = await env.DB.prepare("UPDATE devices SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL")
+    .bind(Date.now(), deviceId).run();
+  return { revoked: result.meta?.changes === 1 };
+}
+
+async function selfRevokeDevice(request, env) {
+  const token = request.headers.get("Authorization").slice(7);
+  const result = await env.DB.prepare(
+    "UPDATE devices SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL"
+  ).bind(Date.now(), await sha256(token)).run();
+  return { revoked: result.meta?.changes === 1 };
+}
+
+async function hasDeviceToken(request, env) {
+  if (!env.DB || env.EXPECTED_ENVIRONMENT !== "SANDBOX") return false;
+  const authorization = request.headers.get("Authorization") || "";
+  const token = authorization.startsWith("Bearer ") ? authorization.slice(7) : "";
+  if (!/^[A-Za-z0-9_-]{43}$/.test(token)) return false;
+  const device = await env.DB.prepare(
+    "SELECT id FROM devices WHERE token_hash = ? AND revoked_at IS NULL"
+  ).bind(await sha256(token)).first();
+  return !!device;
+}
+
+async function sha256(value) {
+  return base64Url(new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(value))));
 }
 
 function createProviderClient(env) {

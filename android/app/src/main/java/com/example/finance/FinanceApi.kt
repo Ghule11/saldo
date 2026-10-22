@@ -58,6 +58,41 @@ data class BankingConnectionStatus(
 
 object FinanceApi {
     private const val TIMEOUT_MILLIS = 60_000
+    private const val CLOUD_URL = "https://saldo-bank-probe.saldo-cloud-probe.workers.dev"
+    private var cloudStore: CloudConnectionStore? = null
+
+    fun configureCloud(store: CloudConnectionStore) {
+        cloudStore = store
+    }
+
+    fun isCloudConnected(): Boolean = cloudStore?.token() != null
+
+    fun disconnectCloud() {
+        if (!isCloudConnected()) return
+        requestJson("/api/pairing/self-revoke", "POST")
+        cloudStore?.clear()
+    }
+
+    fun pairCloud(code: String) {
+        val connection = URL("$CLOUD_URL/api/pairing/claim").openConnection() as HttpURLConnection
+        try {
+            connection.requestMethod = "POST"
+            connection.connectTimeout = TIMEOUT_MILLIS
+            connection.readTimeout = TIMEOUT_MILLIS
+            connection.setRequestProperty("Content-Type", "application/json")
+            connection.setRequestProperty("Accept", "application/json")
+            connection.doOutput = true
+            connection.outputStream.use { it.write(JSONObject().put("code", code.trim()).toString().toByteArray()) }
+            if (connection.responseCode !in 200..299) {
+                throw IOException("Kopplungscode ungültig oder abgelaufen.")
+            }
+            val result = JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
+            val token = result.getString("token")
+            (cloudStore ?: throw IOException("Cloud-Speicher ist nicht bereit.")).save(token)
+        } finally {
+            connection.disconnect()
+        }
+    }
 
     fun fetchOverview(): FinanceOverview {
         return getJson("/api/overview").toFinanceOverview()
@@ -86,6 +121,7 @@ object FinanceApi {
     }
 
     fun fetchImportedHistory(): FinanceOverview? {
+        if (isCloudConnected()) return null
         val response = getJson("/api/history")
         val items = response.optJSONArray("transactions") ?: return null
         if (items.length() == 0) return null
@@ -139,7 +175,9 @@ object FinanceApi {
     private fun getJson(path: String): JSONObject = requestJson(path, "GET")
 
     private fun requestJson(path: String, method: String): JSONObject {
-        val connection = URL("${BuildConfig.FINANCE_API_BASE_URL}$path")
+        val cloudToken = cloudStore?.token()
+        val baseUrl = if (cloudToken == null) BuildConfig.FINANCE_API_BASE_URL else CLOUD_URL
+        val connection = URL("$baseUrl$path")
             .openConnection() as HttpURLConnection
 
         try {
@@ -147,12 +185,16 @@ object FinanceApi {
             connection.connectTimeout = TIMEOUT_MILLIS
             connection.readTimeout = TIMEOUT_MILLIS
             connection.setRequestProperty("Accept", "application/json")
+            if (cloudToken != null) connection.setRequestProperty("Authorization", "Bearer $cloudToken")
             if (path.startsWith("/api/banking/data")) {
                 connection.setRequestProperty("Psu-User-Agent", "Saldo/1.0 (Android)")
             }
 
             val status = connection.responseCode
             if (status !in 200..299) {
+                if (status == 401 && cloudToken != null) {
+                    throw IOException("Cloud-Kopplung ungültig. Bitte erneut koppeln.")
+                }
                 if (status == 429) {
                     throw IOException("Bank Austria lässt gerade keine weiteren Abrufe zu. Bitte später erneut versuchen.")
                 }

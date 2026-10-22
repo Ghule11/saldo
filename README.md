@@ -24,7 +24,7 @@ The backend includes a sandbox-only Enable Banking authorization flow. When a sa
 
 The app and backend support Bank Austria account authorization through a separate, restricted Enable Banking production application. Each user must register that production application, link their own account in the Control Panel, and then authorize the account in Saldo. The sandbox and production sessions are stored separately. The displayed transaction history is limited to the dates returned by the bank connection; older history may require a separate statement import. See [`docs/enable-banking-production.md`](docs/enable-banking-production.md) for the exact steps and emulator limitation.
 
-A Cloudflare Worker now completes a sandbox-only Enable Banking connection, stores the session encrypted, and caches synthetic account data for 12 hours. The Android app still uses the local backend; the real Bank Austria account has not been moved to Cloudflare. See [`docs/cloud-backend.md`](docs/cloud-backend.md).
+A Cloudflare Worker now completes a sandbox-only Enable Banking connection, stores the session encrypted, and caches synthetic account data for 12 hours. The Android app can be paired with a short-lived code to load those test data directly over HTTPS. Without pairing it still uses the local backend; the real Bank Austria account has not been moved to Cloudflare. See [`docs/cloud-backend.md`](docs/cloud-backend.md).
 
 Successful bank responses are encrypted in a local backend cache to reduce repeat requests. A temporary provider rate limit shows the last saved bank response if one exists, or a clear retry message; it never substitutes sample transactions for production bank data.
 

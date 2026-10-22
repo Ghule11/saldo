@@ -123,6 +123,13 @@ private fun FinanceApp() {
     var connectNotice by remember { mutableStateOf<String?>(null) }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val cloudStore = remember(context) {
+        CloudConnectionStore(context.applicationContext).also { FinanceApi.configureCloud(it) }
+    }
+    var cloudConnected by remember { mutableStateOf(cloudStore.token() != null) }
+    var showCloudPairing by remember { mutableStateOf(false) }
+    var isPairing by remember { mutableStateOf(false) }
+    var pairingError by remember { mutableStateOf<String?>(null) }
     val categoryStore = remember(context) { CategoryOverrideStore(context.applicationContext) }
     val subscriptionStore = remember(context) { SubscriptionDecisionStore(context.applicationContext) }
     val recurringStore = remember(context) { RecurringVisibilityStore(context.applicationContext) }
@@ -190,6 +197,24 @@ private fun FinanceApp() {
         }
     }
 
+    fun pairCloud(code: String) {
+        if (isPairing) return
+        isPairing = true
+        pairingError = null
+        scope.launch {
+            try {
+                withContext(Dispatchers.IO) { FinanceApi.pairCloud(code) }
+                cloudConnected = true
+                showCloudPairing = false
+                reloadKey++
+            } catch (exception: Exception) {
+                pairingError = exception.message ?: "Cloud-Kopplung fehlgeschlagen."
+            } finally {
+                isPairing = false
+            }
+        }
+    }
+
     LaunchedEffect(reloadKey) {
         isLoading = true
         errorMessage = null
@@ -226,7 +251,8 @@ private fun FinanceApp() {
             errorMessage = if (importedHistory != null) {
                 "Der Bankstatus konnte nicht geprüft werden. Die importierten Umsätze sind weiterhin verfügbar."
             } else {
-                "Die Finanzdaten konnten nicht geladen werden. Prüfe, ob Saldo auf dem Computer läuft."
+                if (cloudConnected) "Die Cloud-Daten konnten nicht geladen werden. Bitte später erneut versuchen."
+                else "Die Finanzdaten konnten nicht geladen werden. Prüfe, ob Saldo auf dem Computer läuft."
             }
             overview = overview?.takeIf { it.dataSource == "banking_production" }
                 ?.copy(isCached = true)
@@ -237,6 +263,13 @@ private fun FinanceApp() {
         }
     }
 
+    if (showCloudPairing) CloudPairingDialog(
+        isPairing = isPairing,
+        error = pairingError,
+        onDismiss = { if (!isPairing) showCloudPairing = false },
+        onPair = ::pairCloud
+    )
+
     val data = overview
     if (data == null) {
         if (isLoading) LoadingScreen() else ConnectionErrorScreen(
@@ -244,7 +277,8 @@ private fun FinanceApp() {
             { reloadKey++ },
             if (errorMessage?.contains("abgelaufen", ignoreCase = true) == true) ::startBankConnection else null,
             connectNotice,
-            connectError
+            connectError,
+            if (!cloudConnected) { { showCloudPairing = true } } else null
         )
         return
     }
@@ -312,7 +346,19 @@ private fun FinanceApp() {
                 merchantRules, subscriptionDecisions, ::removeMerchantRule, ::resetSubscriptionDecision,
                 bankingStatus, isLoading,
                 isConnecting, errorMessage, connectError, connectNotice, { reloadKey++ },
-                { startBankConnection() }, modifier)
+                { startBankConnection() }, cloudConnected,
+                { showCloudPairing = true },
+                {
+                    scope.launch {
+                        try {
+                            withContext(Dispatchers.IO) { FinanceApi.disconnectCloud() }
+                            cloudConnected = false
+                            reloadKey++
+                        } catch (exception: Exception) {
+                            connectError = exception.message ?: "Cloud-Verbindung konnte nicht getrennt werden."
+                        }
+                    }
+                }, modifier)
         }
     }
 
@@ -376,7 +422,8 @@ private fun ConnectionErrorScreen(
     onRetry: () -> Unit,
     onConnect: (() -> Unit)? = null,
     connectNotice: String? = null,
-    connectError: String? = null
+    connectError: String? = null,
+    onCloudPair: (() -> Unit)? = null
 ) {
     Surface(modifier = Modifier.fillMaxSize(), color = Background) {
         Column(
@@ -389,6 +436,10 @@ private fun ConnectionErrorScreen(
             Text(message, color = Muted, textAlign = TextAlign.Center)
             Spacer(Modifier.height(18.dp))
             ActionButton("Erneut versuchen", onRetry)
+            if (onCloudPair != null) {
+                Spacer(Modifier.height(12.dp))
+                ActionButton("Cloud-Testverbindung koppeln", onCloudPair)
+            }
             if (onConnect != null) {
                 Spacer(Modifier.height(12.dp))
                 ActionButton("Bank Austria erneut verbinden", onConnect)
@@ -397,6 +448,39 @@ private fun ConnectionErrorScreen(
             connectError?.let { Text(it, color = Red, textAlign = TextAlign.Center) }
         }
     }
+}
+
+@Composable
+private fun CloudPairingDialog(
+    isPairing: Boolean,
+    error: String?,
+    onDismiss: () -> Unit,
+    onPair: (String) -> Unit
+) {
+    var code by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Cloud-Testverbindung") },
+        text = {
+            Column {
+                Text("Gib den einmaligen Kopplungscode ein. Er ist zehn Minuten gültig.")
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = code,
+                    onValueChange = { code = it.trim() },
+                    label = { Text("Kopplungscode") },
+                    singleLine = true
+                )
+                if (error != null) Text(error, color = Red)
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onPair(code) }, enabled = !isPairing && code.isNotBlank()) {
+                Text(if (isPairing) "Verbinde …" else "Verbinden")
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Abbrechen") } }
+    )
 }
 
 @Composable
@@ -718,6 +802,9 @@ private fun AccountScreen(
     connectNotice: String?,
     onRefresh: () -> Unit,
     onConnect: () -> Unit,
+    cloudConnected: Boolean,
+    onCloudPair: () -> Unit,
+    onCloudDisconnect: () -> Unit,
     modifier: Modifier
 ) {
     LazyColumn(
@@ -727,6 +814,18 @@ private fun AccountScreen(
     ) {
         item { ScreenTitle("Konto", "Verbindung und Daten") }
         item { DataSourceBanner(data) }
+        item {
+            PanelCard {
+                SectionHeading("Cloud-Testverbindung", if (cloudConnected) "Gekoppelt" else "Nicht gekoppelt")
+                Spacer(Modifier.height(8.dp))
+                Text(if (cloudConnected) "Testdaten sind auch ohne laufenden PC erreichbar."
+                    else "Einmaligen Kopplungscode eingeben, um die Sandbox unterwegs zu nutzen.",
+                    color = Muted, fontSize = 12.sp)
+                Spacer(Modifier.height(10.dp))
+                ActionButton(if (cloudConnected) "Cloud trennen" else "Cloud koppeln",
+                    if (cloudConnected) onCloudDisconnect else onCloudPair)
+            }
+        }
         if (data.dataSource != "sample" || bankingStatus?.environment != "PRODUCTION") {
             item { BalanceCard(data) }
             item {
