@@ -17,7 +17,7 @@ Die Production-Anwendung ist aktiv und die HTTPS-Rücksprungadresse des Workers 
 
 ## Bankabrufe
 
-Erfolgreiche Bankantworten werden zwölf Stunden verschlüsselt zwischengespeichert. In Production lädt ein normaler Abruf die neueste Umsatzseite; ältere Buchungen kommen aus dem importierten Auszug. Bei einem Providerlimit (HTTP 429) pausiert der Worker sechs Stunden. Ein vorhandener Cache darf dann bis zu 24 Stunden alt sein. Beim aktiven Production-Abruf werden die vom Gerät gesendete App-Kennung und die Cloudflare-Client-IP als PSU-Header an Enable Banking weitergegeben. Eine Bankfreigabe muss bei Ablauf erneuert werden.
+In Production ruft ein Cloudflare-Zeitplan die Bank täglich um 08:00, 17:00 und 21:00 Uhr Wiener Zeit ab. Beim Öffnen oder Aktualisieren der Android-App werden nur verschlüsselt gespeicherte Bankdaten gelesen; dadurch entstehen keine zusätzlichen Bankabfragen. Der Worker lädt je geplantem Abruf die neueste Umsatzseite und den Kontostand. Ältere Buchungen kommen aus dem importierten Auszug. Bei einem Providerlimit (HTTP 429) pausiert er sechs Stunden und zeigt bis dahin weiterhin den letzten gespeicherten Stand mit Zeitangabe. Geplante Hintergrundabrufe senden keine PSU-Header, weil der Nutzer dabei nicht aktiv in der App ist. Eine Bankfreigabe muss bei Ablauf erneuert werden.
 
 Die Android-App bietet beim Koppeln „Bank Austria“ und „Testdaten“ an. Nach Production-Kopplung öffnet „Bank Austria verbinden“ die Freigabe-URL im Browser des Geräts. Danach lädt „Daten aktualisieren“ die Bankdaten vom Cloud-Worker. „Cloud trennen“ widerruft nur das Gerätetoken; die verschlüsselten Cloud-Daten und die Bankfreigabe werden dadurch nicht automatisch gelöscht. Siehe auch [Datenschutz](privacy.md).
 

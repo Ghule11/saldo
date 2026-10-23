@@ -86,7 +86,7 @@ export default {
         }
         const provider = createProviderClient(env, request);
         if (url.pathname === "/api/banking/status") {
-          return json(await bankingStatus(env, provider));
+          return json(await bankingStatus(env));
         }
         if (url.pathname === "/api/banking/institutions") {
           return json(await bankingInstitutions(env, provider, url.searchParams.get("country")));
@@ -127,6 +127,31 @@ export default {
       }
       // Keep provider responses, key material and internal errors out of public replies.
       return json({ error: "Banking request failed" }, 503);
+    }
+  },
+
+  async scheduled(controller, env) {
+    if (env.EXPECTED_ENVIRONMENT !== "PRODUCTION" || !env.DB ||
+        !env.DATA_ENCRYPTION_KEY || !env.EB_APPLICATION_ID || !env.EB_PRIVATE_KEY) return;
+
+    const scheduledAt = new Date(controller.scheduledTime);
+    const parts = Object.fromEntries(new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Europe/Vienna", year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", hourCycle: "h23"
+    }).formatToParts(scheduledAt).map(part => [part.type, part.value]));
+    const localHour = Number(parts.hour);
+    if (![8, 17, 21].includes(localHour)) return;
+
+    const session = await readEncryptedState(env, sessionName(env));
+    if (!session?.sessionId) return;
+
+    const slot = `production_refresh:${parts.year}-${parts.month}-${parts.day}:${parts.hour}`;
+    if (!await claimRefreshSlot(env, slot)) return;
+
+    try {
+      await bankingData(env, createProviderClient(env), false, true);
+    } catch (error) {
+      console.warn("Scheduled banking refresh failed", error?.status || 503);
     }
   }
 };
@@ -319,18 +344,20 @@ async function requireActiveApplication(env, provider) {
   if (String(application.environment || "").toUpperCase() !== env.EXPECTED_ENVIRONMENT) {
     throw new SandboxError(409, "Die hinterlegte Anwendung hat die falsche Umgebung.");
   }
+  await writeEncryptedState(env, `${env.EXPECTED_ENVIRONMENT.toLowerCase()}_application_status`, {
+    active: application.active === true,
+    checkedAt: new Date().toISOString()
+  });
   if (application.active !== true) {
     throw new SandboxError(409, "Die Enable-Banking-Anwendung ist nicht aktiv.");
   }
   return application;
 }
 
-async function bankingStatus(env, provider) {
-  const application = await provider("GET", "/application");
-  if (String(application.environment || "").toUpperCase() !== env.EXPECTED_ENVIRONMENT) {
-    throw new SandboxError(409, "Die hinterlegte Anwendung hat die falsche Umgebung.");
-  }
+async function bankingStatus(env) {
   const session = await readEncryptedState(env, sessionName(env));
+  const applicationStatus = await readEncryptedState(env,
+    `${env.EXPECTED_ENVIRONMENT.toLowerCase()}_application_status`);
   const rateLimit = await readEncryptedState(env, `${env.EXPECTED_ENVIRONMENT.toLowerCase()}_rate_limit`);
   return {
     isConfigured: true,
@@ -339,7 +366,7 @@ async function bankingStatus(env, provider) {
     institutionName: session?.institutionName || null,
     institutionCountry: session?.institutionCountry || null,
     accountCount: session?.accountUids?.length || 0,
-    isActive: application.active === true,
+    isActive: applicationStatus?.active ?? true,
     retryAfter: rateLimit?.until > Date.now() ? new Date(rateLimit.until).toISOString() : null
   };
 }
@@ -452,7 +479,7 @@ async function finishAuthorization(url, env) {
   }
 }
 
-async function bankingData(env, provider, allTransactions) {
+async function bankingData(env, provider, allTransactions, scheduledRefresh = false) {
   const session = await readEncryptedState(env, sessionName(env));
   if (!session?.sessionId || !Array.isArray(session.accountUids) || session.accountUids.length === 0) {
     throw new SandboxError(409, "Zuerst ein Konto verbinden.");
@@ -463,7 +490,11 @@ async function bankingData(env, provider, allTransactions) {
   const cacheName = `${env.EXPECTED_ENVIRONMENT.toLowerCase()}_data:${sessionHash}:${allTransactions ? "all" : "recent"}`;
   const cached = await readEncryptedState(env, cacheName);
   const cacheAge = Date.now() - Date.parse(cached?.fetchedAt || "");
-  if (cached && cacheAge >= 0 && cacheAge < 12 * 60 * 60 * 1000) {
+  if (env.EXPECTED_ENVIRONMENT === "PRODUCTION" && !scheduledRefresh) {
+    if (cached) return { ...cached, isCached: true };
+    throw new SandboxError(409, "Bankdaten werden beim nächsten geplanten Abruf geladen.");
+  }
+  if (!scheduledRefresh && cached && cacheAge >= 0 && cacheAge < 12 * 60 * 60 * 1000) {
     return { ...cached, isCached: true };
   }
 
@@ -541,6 +572,21 @@ async function readEncryptedState(env, name) {
 }
 
 async function writeEncryptedState(env, name, value) {
+  const encryptedValue = await encryptStateValue(env, value);
+  await env.DB.prepare(
+    "INSERT INTO app_state (name, encrypted_value) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET encrypted_value = excluded.encrypted_value"
+  ).bind(name, encryptedValue).run();
+}
+
+async function claimRefreshSlot(env, name) {
+  const encryptedValue = await encryptStateValue(env, { claimedAt: new Date().toISOString() });
+  const claimed = await env.DB.prepare(
+    "INSERT OR IGNORE INTO app_state (name, encrypted_value) VALUES (?, ?) RETURNING name"
+  ).bind(name, encryptedValue).first();
+  return claimed !== null;
+}
+
+async function encryptStateValue(env, value) {
   const key = await importEncryptionKey(env.DATA_ENCRYPTION_KEY);
   const nonce = crypto.getRandomValues(new Uint8Array(12));
   const encrypted = new Uint8Array(await crypto.subtle.encrypt(
@@ -548,9 +594,7 @@ async function writeEncryptedState(env, name, value) {
   const combined = new Uint8Array(nonce.length + encrypted.length);
   combined.set(nonce);
   combined.set(encrypted, nonce.length);
-  await env.DB.prepare(
-    "INSERT INTO app_state (name, encrypted_value) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET encrypted_value = excluded.encrypted_value"
-  ).bind(name, base64Url(combined)).run();
+  return base64Url(combined);
 }
 
 async function importEncryptionKey(encoded) {

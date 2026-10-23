@@ -6,7 +6,7 @@ Nach einer ausdrücklichen Freigabe bei der Bank ruft Saldo über Enable Banking
 
 Manuelle Kategorieänderungen, Händlerregeln und Abo-Entscheidungen speichert Android lokal auf dem Gerät. Einzelne Buchungen werden dabei über aus Transaktionsmerkmalen abgeleitete Prüfsummen erkannt; für Händlerregeln und Abo-Entscheidungen werden normalisierte Händlernamen gespeichert.
 
-Im lokalen Modus ermittelt das Backend bei `api.ipify.org` die öffentliche IPv4-Adresse des Computers und übermittelt sie zusammen mit der App-Kennung an Enable Banking. Der IP-Dienst erhält dabei keine Kontodaten. Im Cloud-Modus übermittelt das Backend bei einem aktiven Bankabruf die von Cloudflare übermittelte IP-Adresse des Geräts und die App-Kennung an Enable Banking. Beim Anzeigen zwischengespeicherter Daten wird kein neuer Bankabruf ausgelöst.
+Im lokalen Modus ermittelt das Backend bei `api.ipify.org` die öffentliche IPv4-Adresse des Computers und übermittelt sie zusammen mit der App-Kennung an Enable Banking. Der IP-Dienst erhält dabei keine Kontodaten. Im Cloud-Modus erfolgen Bankabrufe zu festgelegten Zeiten im Hintergrund ohne PSU-Header. Beim Anzeigen zwischengespeicherter Daten wird kein neuer Bankabruf ausgelöst. Cloudflare verarbeitet für die Verbindung zur Android-App die Geräte-IP; sie wird bei den geplanten Hintergrundabrufen nicht als PSU-IP an Enable Banking weitergegeben.
 
 Bank Austria und Enable Banking verarbeiten Daten im Rahmen der vom Nutzer bestätigten Bankfreigabe nach ihren eigenen Datenschutzinformationen. Saldo initiiert keine Zahlungen und gibt keine Kontodaten an Werbe- oder Analysedienste weiter.
 
