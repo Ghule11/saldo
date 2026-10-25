@@ -838,6 +838,7 @@ private fun AnalysisScreen(
     }
     var monthKey by rememberSaveable { mutableStateOf(months.firstOrNull()?.key.orEmpty()) }
     var showMonthlyDetails by rememberSaveable { mutableStateOf(false) }
+    var showReserves by rememberSaveable { mutableStateOf(false) }
     var showSeasonality by rememberSaveable { mutableStateOf(false) }
     val month = months.firstOrNull { it.key == monthKey } ?: months.firstOrNull()
     LazyColumn(
@@ -849,7 +850,15 @@ private fun AnalysisScreen(
         if (data.dataSource == "banking_production") {
             item { DataSourceBanner(data) }
             item { ForecastCard(report.forecast, data.currency, data.fetchedAt) }
-            item { ReservesCard(report.reserves, data.currency, includeReserves, onIncludeReserves) }
+            item {
+                TextButton(onClick = { showReserves = !showReserves }) {
+                    Text(if (showReserves) "Rücklagen ausblenden" else "Rücklagen anzeigen",
+                        color = Purple, fontWeight = FontWeight.SemiBold)
+                }
+            }
+            if (showReserves) item {
+                ReservesCard(report.reserves, data.currency, includeReserves, onIncludeReserves)
+            }
             item {
                 TextButton(onClick = { showSeasonality = !showSeasonality }) {
                     Text(if (showSeasonality) "Saisonanalyse ausblenden" else "Saisonanalyse anzeigen",

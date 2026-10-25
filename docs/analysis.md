@@ -14,7 +14,7 @@ Prognose = bisherige Ausgaben + offene Fixkosten + variabler Tageswert × verble
 
 Saldo schlägt vierteljährliche, halbjährliche und jährliche Zahlungen bei wiederholtem, ungefähr gleich hohem Händlerbetrag vor. Für viertel- und halbjährliche Muster sind mindestens drei Buchungsmonate nötig; für jährliche mindestens zwei. Kleinbeträge unter 30 Euro pro Jahr werden nicht vorgeschlagen. Die Monatsrücklage entspricht der geschätzten Jahressumme geteilt durch zwölf.
 
-Für die Kategorien „Geschenke“ und „Urlaub“ wird die Summe der letzten zwölf vollständigen Monate durch zwölf geteilt. Diese Kategorien können in der Buchungsdetailansicht vergeben werden. Der Schalter „Im täglichen Restbudget abziehen“ ist zunächst aus. Er löst keine Überweisung aus. Beträge, die im aktuellen Monat bereits für denselben Posten bezahlt wurden, werden beim optionalen Abzug angerechnet.
+Für die Kategorien „Geschenke“ und „Urlaub“ wird die Summe der letzten zwölf vollständigen Monate durch zwölf geteilt. Diese Kategorien können in der Buchungsdetailansicht vergeben werden. Der Schalter „Im täglichen Restbudget abziehen“ ist zunächst aus. Er löst keine Überweisung aus. Beträge, die im aktuellen Monat bereits für denselben Posten bezahlt wurden, werden beim optionalen Abzug angerechnet. Die Rücklagenansicht ist standardmäßig eingeklappt.
 
 ## Saison
 
