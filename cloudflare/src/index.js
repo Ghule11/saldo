@@ -4,6 +4,7 @@ const providerBaseUrl = "https://api.enablebanking.com";
 const callbackPath = "/api/banking/callback";
 const validMode = env => ["SANDBOX", "PRODUCTION"].includes(env.EXPECTED_ENVIRONMENT);
 const sessionName = env => `${env.EXPECTED_ENVIRONMENT.toLowerCase()}_session`;
+const refreshStatusName = env => `${env.EXPECTED_ENVIRONMENT.toLowerCase()}_refresh_status`;
 
 export default {
   async fetch(request, env) {
@@ -148,13 +149,50 @@ export default {
     const slot = `production_refresh:${parts.year}-${parts.month}-${parts.day}:${parts.hour}`;
     if (!await claimRefreshSlot(env, slot)) return;
 
+    const attemptedAt = scheduledAt.toISOString();
+    const previous = await readEncryptedState(env, refreshStatusName(env));
+    let result;
     try {
-      await bankingData(env, createProviderClient(env), false, true);
+      result = await bankingData(env, createProviderClient(env), false, true);
     } catch (error) {
-      console.warn("Scheduled banking refresh failed", error?.status || 503);
+      const failure = {
+        at: attemptedAt,
+        stage: error?.refreshStage || "preparation",
+        code: refreshFailureCode(error)
+      };
+      try {
+        await writeEncryptedState(env, refreshStatusName(env), {
+          lastAttemptAt: attemptedAt,
+          lastSuccessAt: previous?.lastSuccessAt || null,
+          lastOutcome: "failed",
+          lastFailure: failure
+        });
+      } catch {
+        console.warn("Scheduled refresh status could not be saved");
+      }
+      console.warn("Scheduled banking refresh failed", failure.stage, failure.code);
+      return;
+    }
+    try {
+      await writeEncryptedState(env, refreshStatusName(env), {
+        lastAttemptAt: attemptedAt,
+        lastSuccessAt: result.fetchedAt,
+        lastOutcome: "success",
+        lastFailure: previous?.lastFailure || null
+      });
+    } catch {
+      console.warn("Scheduled refresh success could not be saved");
     }
   }
 };
+
+function refreshFailureCode(error) {
+  if (error?.diagnosticCode) return error.diagnosticCode;
+  if (error?.status === 429) return "rate_limited";
+  if (error?.status === 409) return "session_unavailable";
+  if (error?.status === 502) return "invalid_response";
+  return "internal_error";
+}
 
 async function probeEncryptedStorage(env) {
   const name = `probe:${crypto.randomUUID()}`;
@@ -318,22 +356,26 @@ function createProviderClient(env, request = null) {
         psuHeaders["Psu-Ip-Address"] = ipAddress;
       }
     }
-    const response = await fetch(`${providerBaseUrl}${path}`, {
-      method,
-      headers: {
-        Accept: "application/json",
-        Authorization: `Bearer ${await jwt}`,
-        ...psuHeaders,
-        ...(body ? { "Content-Type": "application/json" } : {})
-      },
-      ...(body ? { body: JSON.stringify(body) } : {})
-    });
+    let response;
+    try {
+      response = await fetch(`${providerBaseUrl}${path}`, {
+        method,
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${await jwt}`,
+          ...psuHeaders,
+          ...(body ? { "Content-Type": "application/json" } : {})
+        },
+        ...(body ? { body: JSON.stringify(body) } : {})
+      });
+    } catch {
+      throw new SandboxError(503, "Enable Banking ist derzeit nicht erreichbar.", "provider_network");
+    }
     const result = await response.json().catch(() => ({}));
     if (!response.ok) {
-      console.warn("Banking provider status", response.status,
-        typeof result.error === "string" ? result.error : "PROVIDER_ERROR");
+      console.warn("Banking provider status", response.status);
       throw new SandboxError(response.status === 429 ? 429 : 502,
-        "Enable Banking konnte die Testanfrage nicht abschließen.");
+        "Enable Banking konnte die Anfrage nicht abschließen.", `provider_http_${response.status}`);
     }
     return result;
   };
@@ -359,6 +401,8 @@ async function bankingStatus(env) {
   const applicationStatus = await readEncryptedState(env,
     `${env.EXPECTED_ENVIRONMENT.toLowerCase()}_application_status`);
   const rateLimit = await readEncryptedState(env, `${env.EXPECTED_ENVIRONMENT.toLowerCase()}_rate_limit`);
+  const refresh = env.EXPECTED_ENVIRONMENT === "PRODUCTION"
+    ? await readEncryptedState(env, refreshStatusName(env)) : null;
   return {
     isConfigured: true,
     isSandbox: env.EXPECTED_ENVIRONMENT === "SANDBOX",
@@ -367,7 +411,8 @@ async function bankingStatus(env) {
     institutionCountry: session?.institutionCountry || null,
     accountCount: session?.accountUids?.length || 0,
     isActive: applicationStatus?.active ?? true,
-    retryAfter: rateLimit?.until > Date.now() ? new Date(rateLimit.until).toISOString() : null
+    retryAfter: rateLimit?.until > Date.now() ? new Date(rateLimit.until).toISOString() : null,
+    refresh
   };
 }
 
@@ -472,6 +517,19 @@ async function finishAuthorization(url, env) {
       institutionCountry: pending.institution_country,
       accountUids
     });
+    if (env.EXPECTED_ENVIRONMENT === "PRODUCTION") {
+      try {
+        const previous = await readEncryptedState(env, refreshStatusName(env));
+        await writeEncryptedState(env, refreshStatusName(env), {
+          lastAttemptAt: null,
+          lastSuccessAt: null,
+          lastOutcome: null,
+          lastFailure: previous?.lastFailure || null
+        });
+      } catch {
+        console.warn("Banking refresh status could not be reset");
+      }
+    }
     return callbackPage("Konto verbunden. Kehre zu Saldo zurück.", 200);
   } catch (error) {
     console.warn("Banking callback failed", error?.name || "UnknownError");
@@ -501,22 +559,25 @@ async function bankingData(env, provider, allTransactions, scheduledRefresh = fa
   const rateLimitName = `${env.EXPECTED_ENVIRONMENT.toLowerCase()}_rate_limit`;
   const rateLimit = await readEncryptedState(env, rateLimitName);
   if (rateLimit?.until > Date.now()) {
-    if (cached && cacheAge >= 0 && cacheAge < 24 * 60 * 60 * 1000) {
+    if (!scheduledRefresh && cached && cacheAge >= 0 && cacheAge < 24 * 60 * 60 * 1000) {
       return { ...cached, isCached: true };
     }
     throw new SandboxError(429, "Die Bank erlaubt derzeit keinen weiteren Abruf.");
   }
 
+  let refreshStage = "balances";
   try {
     const accounts = [];
     for (const accountUid of session.accountUids) {
       const path = `/accounts/${encodeURIComponent(accountUid)}`;
+      refreshStage = "balances";
       const balances = await provider("GET", `${path}/balances`);
       const collected = [];
       const seenKeys = new Set();
       let continuationKey = null;
       const maxPages = allTransactions ? 100 : env.EXPECTED_ENVIRONMENT === "PRODUCTION" ? 1 : 10;
       for (let page = 0; page < maxPages; page++) {
+        refreshStage = "transactions";
         const suffix = continuationKey
           ? `?continuation_key=${encodeURIComponent(continuationKey)}` : "";
         const response = await provider("GET", `${path}/transactions${suffix}`);
@@ -547,12 +608,14 @@ async function bankingData(env, provider, allTransactions, scheduledRefresh = fa
       fetchedAt: new Date().toISOString(),
       isCached: false
     };
+    refreshStage = "cache_write";
     await writeEncryptedState(env, cacheName, result);
     return result;
   } catch (error) {
+    if (error && typeof error === "object") error.refreshStage = refreshStage;
     if (error instanceof SandboxError && error.status === 429) {
       await writeEncryptedState(env, rateLimitName, { until: Date.now() + 6 * 60 * 60 * 1000 });
-      if (cached && cacheAge >= 0 && cacheAge < 24 * 60 * 60 * 1000) {
+      if (!scheduledRefresh && cached && cacheAge >= 0 && cacheAge < 24 * 60 * 60 * 1000) {
         return { ...cached, isCached: true };
       }
     }
@@ -621,7 +684,11 @@ function callbackPage(message, status) {
 }
 
 class SandboxError extends Error {
-  constructor(status, message) { super(message); this.status = status; }
+  constructor(status, message, diagnosticCode = null) {
+    super(message);
+    this.status = status;
+    this.diagnosticCode = diagnosticCode;
+  }
 }
 
 function hasProbeToken(request, expected) {

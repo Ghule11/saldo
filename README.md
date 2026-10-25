@@ -30,6 +30,8 @@ Successful bank responses are encrypted in a local backend cache to reduce repea
 
 Older Bank Austria transactions can be imported once from a 24You CSV export with the local backend command described in [`docs/statement-import.md`](docs/statement-import.md). The import is encrypted outside the repository. When the bank temporarily rejects data requests, Saldo still shows imported transactions and clearly marks the current balance as unavailable. When bank data becomes available, transactions older than the oldest API transaction are added to the live view without duplicating the overlap. The local backend fetches the newest bank transaction page and follows additional pages only until they overlap the imported statement. The production Cloudflare Worker refreshes bank data at 08:00, 17:00, and 21:00 Vienna time; opening the Android app reads its encrypted cache without contacting the bank. A six-hour pause blocks scheduled requests after a provider rate limit.
 
+The Production Worker also records the outcome of each scheduled refresh without account data in its diagnostics. Saldo warns when the latest scheduled refresh failed and checks the cached status again when the app returns to the foreground.
+
 ## Run locally
 
 - Start the backend project in `backend/Finance.Api/` with its `https` launch profile (ports `7129` for the desktop callback and `5006` for the emulator API). A locally trusted development certificate for `localhost` is required.

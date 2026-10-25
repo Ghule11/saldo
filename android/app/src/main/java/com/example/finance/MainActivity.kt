@@ -103,17 +103,25 @@ private enum class AppTab(val title: String, val mark: String) {
 }
 
 class MainActivity : ComponentActivity() {
+    private var hasResumed = false
+    private var resumeVersion by mutableIntStateOf(0)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         WindowCompat.getInsetsController(window, window.decorView).isAppearanceLightStatusBars = false
         WindowCompat.getInsetsController(window, window.decorView).isAppearanceLightNavigationBars = false
-        setContent { FinanceTheme { FinanceApp() } }
+        setContent { FinanceTheme { FinanceApp(resumeVersion) } }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (hasResumed) resumeVersion++ else hasResumed = true
     }
 }
 
 @Composable
-private fun FinanceApp() {
+private fun FinanceApp(resumeVersion: Int) {
     var selectedTab by rememberSaveable { mutableStateOf(AppTab.Overview) }
     var overview by remember { mutableStateOf<FinanceOverview?>(null) }
     var isLoading by remember { mutableStateOf(true) }
@@ -226,7 +234,7 @@ private fun FinanceApp() {
         }
     }
 
-    LaunchedEffect(reloadKey) {
+    LaunchedEffect(reloadKey, resumeVersion) {
         isLoading = true
         errorMessage = null
         val importedHistory = withContext(Dispatchers.IO) {
@@ -345,7 +353,7 @@ private fun FinanceApp() {
             )
         } else when (selectedTab) {
             AppTab.Overview -> OverviewScreen(
-                categorized, months, hiddenRecurring, subscriptionDecisions, ::hideRecurring,
+                categorized, months, bankingStatus, hiddenRecurring, subscriptionDecisions, ::hideRecurring,
                 ::restoreRecurring, ::decideSubscription, modifier
             )
             AppTab.Transactions -> screenStateHolder.SaveableStateProvider("transactions") {
@@ -507,6 +515,7 @@ private fun CloudPairingDialog(
 private fun OverviewScreen(
     data: FinanceOverview,
     months: List<MonthlySnapshot>,
+    bankingStatus: BankingConnectionStatus?,
     hiddenRecurring: Set<String>,
     subscriptionDecisions: Map<String, SubscriptionDecision>,
     onHideRecurring: (String) -> Unit,
@@ -522,6 +531,9 @@ private fun OverviewScreen(
     ) {
         item { Text("Saldo", color = Ink, fontSize = 28.sp, fontWeight = FontWeight.Bold) }
         item { DataSourceBanner(data) }
+        if (bankingStatus?.refresh?.lastOutcome == "failed") {
+            item { RefreshFailureNotice(bankingStatus) }
+        }
         item { BalanceCard(data) }
         if (current != null) {
             item { SectionHeading("Monatsübersicht", current.label) }
@@ -835,6 +847,9 @@ private fun AccountScreen(
     ) {
         item { ScreenTitle("Konto", "Verbindung und Daten") }
         item { DataSourceBanner(data) }
+        if (bankingStatus?.refresh?.lastOutcome == "failed") {
+            item { RefreshFailureNotice(bankingStatus) }
+        }
         item {
             PanelCard {
                 SectionHeading("Cloud-Verbindung", if (cloudConnected) "Gekoppelt" else "Nicht gekoppelt")
@@ -943,6 +958,31 @@ private fun String?.toLocalBankTime(): String? = this?.let { value ->
                 .format(DateTimeFormatter.ofPattern("dd.MM. HH:mm", Locale.GERMANY))
         } else null
     }.getOrNull()
+}
+
+private fun String?.toBankDateTime(): String? = this?.let { value ->
+    runCatching {
+        OffsetDateTime.parse(value).atZoneSameInstant(BankTimeZone)
+            .format(DateTimeFormatter.ofPattern("dd.MM. HH:mm", Locale.GERMANY))
+    }.getOrNull()
+}
+
+@Composable
+private fun RefreshFailureNotice(status: BankingConnectionStatus) {
+    val attempt = status.refresh?.lastAttemptAt.toBankDateTime()
+    val pausedUntil = status.retryAfter.toLocalBankTime()
+    PanelCard {
+        Text(if (pausedUntil != null) "Bankabruf pausiert" else "Bankabruf fehlgeschlagen",
+            color = Color(0xFFFFBE7D), fontSize = 14.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(6.dp))
+        Text(
+            if (pausedUntil != null) "Die Bank erlaubt derzeit keinen neuen Abruf. Erneuter Versuch frühestens ab $pausedUntil."
+            else "Der geplante Abruf${if (attempt != null) " am $attempt" else ""} hat nicht geklappt.",
+            color = Ink, fontSize = 12.sp
+        )
+        Spacer(Modifier.height(4.dp))
+        Text("Saldo zeigt weiterhin den zuletzt gespeicherten Datenstand.", color = Muted, fontSize = 12.sp)
+    }
 }
 
 @Composable

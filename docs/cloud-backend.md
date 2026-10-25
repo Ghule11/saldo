@@ -19,6 +19,8 @@ Die Production-Anwendung ist aktiv und die HTTPS-Rücksprungadresse des Workers 
 
 In Production ruft ein Cloudflare-Zeitplan die Bank täglich um 08:00, 17:00 und 21:00 Uhr Wiener Zeit ab. Beim Öffnen oder Aktualisieren der Android-App werden nur verschlüsselt gespeicherte Bankdaten gelesen; dadurch entstehen keine zusätzlichen Bankabfragen. Der Worker lädt je geplantem Abruf die neueste Umsatzseite und den Kontostand. Ältere Buchungen kommen aus dem importierten Auszug. Bei einem Providerlimit (HTTP 429) pausiert er sechs Stunden und zeigt bis dahin weiterhin den letzten gespeicherten Stand mit Zeitangabe. Geplante Hintergrundabrufe senden keine PSU-Header, weil der Nutzer dabei nicht aktiv in der App ist. Eine Bankfreigabe muss bei Ablauf erneuert werden.
 
+Nach jedem geplanten Abruf speichert der Production-Worker verschlüsselt, wann der Versuch stattfand und ob er erfolgreich war. Bei einem Fehler bleiben nur der betroffene Schritt und ein allgemeiner Fehlercode für die Diagnose erhalten; Kontodaten oder Provider-Antworten werden nicht in dieses Protokoll geschrieben. Die App zeigt einen fehlgeschlagenen Abruf neben dem letzten Datenstand an und liest beim erneuten Öffnen nur den Cloud-Cache. Ein fehlgeschlagener Abruf löst keinen zusätzlichen Bankaufruf aus; der nächste Versuch folgt dem festen Zeitplan.
+
 Die Android-App bietet beim Koppeln „Bank Austria“ und „Testdaten“ an. Nach Production-Kopplung öffnet „Bank Austria verbinden“ die Freigabe-URL im Browser des Geräts. Danach lädt „Daten aktualisieren“ die Bankdaten vom Cloud-Worker. „Cloud trennen“ widerruft nur das Gerätetoken; die verschlüsselten Cloud-Daten und die Bankfreigabe werden dadurch nicht automatisch gelöscht. Siehe auch [Datenschutz](privacy.md).
 
 ## Betrieb

@@ -53,7 +53,14 @@ data class BankingConnectionStatus(
     val isActive: Boolean,
     val accountCount: Int,
     val institutionName: String?,
-    val retryAfter: String?
+    val retryAfter: String?,
+    val refresh: BankRefreshStatus? = null
+)
+
+data class BankRefreshStatus(
+    val lastAttemptAt: String?,
+    val lastSuccessAt: String?,
+    val lastOutcome: String?
 )
 
 object FinanceApi {
@@ -104,13 +111,21 @@ object FinanceApi {
 
     fun fetchBankingStatus(): BankingConnectionStatus {
         val status = getJson("/api/banking/status")
+        val refresh = status.optJSONObject("refresh")?.let {
+            BankRefreshStatus(
+                lastAttemptAt = it.optString("lastAttemptAt").cleanValue(),
+                lastSuccessAt = it.optString("lastSuccessAt").cleanValue(),
+                lastOutcome = it.optString("lastOutcome").cleanValue()
+            )
+        }
         return BankingConnectionStatus(
             environment = status.optString("environment", "SANDBOX"),
             isConfigured = status.optBoolean("isConfigured"),
             isActive = status.optBoolean("isActive"),
             accountCount = status.optInt("accountCount"),
             institutionName = status.optString("institutionName").cleanValue(),
-            retryAfter = status.optString("retryAfter").cleanValue()
+            retryAfter = status.optString("retryAfter").cleanValue(),
+            refresh = refresh
         )
     }
 
