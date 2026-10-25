@@ -841,7 +841,7 @@ private fun AnalysisScreen(
         contentPadding = PaddingValues(20.dp),
         verticalArrangement = Arrangement.spacedBy(17.dp)
     ) {
-        item { ScreenTitle("Analyse", "Prognose, Rücklagen und saisonale Muster") }
+        item { ScreenTitle("Analyse", "") }
         if (data.dataSource == "banking_production") {
             item { DataSourceBanner(data) }
             item { ForecastCard(report.forecast, data.currency, data.fetchedAt) }
@@ -920,7 +920,7 @@ private fun ForecastCard(forecast: MonthlyForecast, currency: String, fetchedAt:
         } ?: true
         if (stale) {
             Spacer(Modifier.height(8.dp))
-            Text("Der Bankdatenstand ist älter als gestern. Die Schätzung kann Ausgaben übersehen.",
+            Text("Bankdaten älter als gestern",
                 color = Color(0xFFFFBE7D), fontSize = 11.sp)
         }
         Spacer(Modifier.height(13.dp))
@@ -931,22 +931,22 @@ private fun ForecastCard(forecast: MonthlyForecast, currency: String, fetchedAt:
         } else {
             Text("Noch keine belastbare Prognose", color = Ink,
                 fontSize = 17.sp, fontWeight = FontWeight.Bold)
-            Text("Dafür braucht Saldo mindestens drei vollständige Vormonate mit regelmäßigen Buchungen.",
+            Text("Mindestens 3 Vormonate nötig",
                 color = Muted, fontSize = 12.sp)
         }
         Spacer(Modifier.height(13.dp))
         InfoRow("Bereits ausgegeben", formatCurrency(forecast.spentCents, currency))
-        InfoRow("Noch offene bestätigte Abos", formatCurrency(forecast.upcomingFixedCents, currency))
+        InfoRow("Offene Abos", formatCurrency(forecast.upcomingFixedCents, currency))
         if (forecast.variableDailyCents != null) {
             InfoRow("Variable Ausgaben pro Tag", formatCurrency(forecast.variableDailyCents, currency))
         }
-        InfoRow("Resttage im Monat", forecast.remainingDays.toString())
+        InfoRow("Resttage", forecast.remainingDays.toString())
         if (forecast.expectedIncomeCents != null) {
             InfoRow("Erwartete Einnahmen", formatCurrency(forecast.expectedIncomeCents, currency))
         }
         if (forecast.differenceCents != null) {
             Spacer(Modifier.height(9.dp))
-            Text("Voraussichtliche Differenz: " + formatSigned(forecast.differenceCents, currency),
+            Text("Differenz: " + formatSigned(forecast.differenceCents, currency),
                 color = signalColor, fontSize = 15.sp, fontWeight = FontWeight.Bold)
         }
         if (forecast.dailyRoomCents != null) {
@@ -955,8 +955,8 @@ private fun ForecastCard(forecast: MonthlyForecast, currency: String, fetchedAt:
                 color = if (forecast.dailyRoomCents >= 0) Green else Red,
                 fontSize = 15.sp, fontWeight = FontWeight.Bold)
             if (forecast.reservesIncluded && forecast.reserveDeductionCents > 0) {
-                Text("Mit " + formatCurrency(forecast.reserveDeductionCents, currency) +
-                    " noch offener Rücklage für diesen Monat.", color = Muted, fontSize = 11.sp)
+                InfoRow("Rücklagen berücksichtigt",
+                    formatCurrency(forecast.reserveDeductionCents, currency))
             }
         }
         if (forecast.fixedCosts.isNotEmpty()) {
@@ -964,11 +964,6 @@ private fun ForecastCard(forecast: MonthlyForecast, currency: String, fetchedAt:
             Text("Offen: " + forecast.fixedCosts.joinToString(", ") { it.name },
                 color = Muted, fontSize = 11.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
-        Spacer(Modifier.height(12.dp))
-        Text("Schätzung aus " + forecast.historyMonths +
-            " Vormonaten: bisherige Ausgaben + offene Abos + Tageswert × Resttage. " +
-            "Einmalige große Wochen werden im Tageswert begrenzt.",
-            color = Muted, fontSize = 11.sp, lineHeight = 16.sp)
     }
 }
 
@@ -985,22 +980,17 @@ private fun ReservesCard(
             if (reserves.entries.size == 1) " Vorschlag" else " Vorschläge")
         Spacer(Modifier.height(10.dp))
         if (reserves.entries.isEmpty()) {
-            Text("Noch keine wiederkehrenden größeren Zahlungen erkannt. " +
-                "Geschenke und Urlaub kannst du bei einzelnen Buchungen als Kategorie wählen.",
+            Text("Keine Rücklagen erkannt",
                 color = Muted, fontSize = 12.sp)
         } else {
             Text("Monatlich geschätzt: " + formatCurrency(reserves.monthlyCents, currency),
                 color = Purple, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-            Text("Aus seltenen Wiederholungen und den letzten zwölf vollständigen Monaten " +
-                "bei Geschenken und Urlaub.", color = Muted, fontSize = 11.sp)
             Spacer(Modifier.height(10.dp))
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text("Im täglichen Restbudget abziehen", modifier = Modifier.weight(1f),
                     color = Ink, fontSize = 12.sp)
                 Switch(checked = includeReserves, onCheckedChange = onIncludeReserves)
             }
-            Text("Das verschiebt kein Geld. Bereits in diesem Monat bezahlte Beträge werden " +
-                "nicht doppelt abgezogen.", color = Muted, fontSize = 10.sp)
             Spacer(Modifier.height(10.dp))
             (if (showAll) reserves.entries else reserves.entries.take(5)).forEach { entry ->
                 Row(Modifier.fillMaxWidth().padding(vertical = 6.dp),
@@ -1034,25 +1024,17 @@ private fun SeasonalityCard(seasonality: SeasonalitySummary, currency: String) {
         SectionHeading("Saisonanalyse", seasonality.historyMonths.toString() + " Monate")
         Spacer(Modifier.height(10.dp))
         if (seasonality.months.isEmpty()) {
-            Text("Für belastbare Monatsmuster braucht Saldo mindestens zwölf vollständige " +
-                "Monate ohne größere Lücken in der Umsatzhistorie.",
+            Text("Mindestens 12 Monate nötig",
                 color = Muted, fontSize = 12.sp)
             return@PanelCard
         }
         if (!seasonality.canClassify) {
-            Text("Vorläufige Werte: Für eine Monats-Einstufung braucht Saldo zwei " +
-                "vollständige Vergleichsjahre ohne größere Lücken.",
+            Text("Vorläufige Werte",
                 color = Color(0xFFFFBE7D), fontSize = 11.sp)
-            Spacer(Modifier.height(9.dp))
-        } else {
-            Text("Vergleich der variablen Ausgaben mit dem Durchschnitt aller Monate. " +
-                "„Sparen“ bedeutet: In diesem Kalendermonat waren Ausgaben bisher meist höher.",
-                color = Muted, fontSize = 11.sp)
             Spacer(Modifier.height(9.dp))
         }
         if (seasonality.otherSharePercent >= 30) {
-            Text(seasonality.otherSharePercent.toString() +
-                "% der variablen Ausgaben sind noch „Sonstiges“. Eigene Kategorien verbessern die Muster.",
+            Text(seasonality.otherSharePercent.toString() + "% Sonstiges",
                 color = Color(0xFFFFBE7D), fontSize = 11.sp)
             Spacer(Modifier.height(9.dp))
         }
@@ -1077,20 +1059,14 @@ private fun SeasonalityCard(seasonality: SeasonalitySummary, currency: String) {
                 horizontalArrangement = Arrangement.SpaceBetween) {
                 Column(Modifier.weight(1f)) {
                     Text(name, color = Ink, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                    if (month.drivers.isNotEmpty()) {
-                        Text(month.drivers.take(2).joinToString(" · ") { driver ->
-                            driver.category + " " +
-                                (if (driver.deviationPercent >= 0) "+" else "") +
-                                driver.deviationPercent + "%"
-                        }, color = Muted, fontSize = 10.sp, maxLines = 2)
-                    }
                 }
                 Spacer(Modifier.width(8.dp))
                 Column(horizontalAlignment = Alignment.End) {
                     Text((if (month.deviationPercent >= 0) "+" else "") +
                         month.deviationPercent + "%", color = accent,
                         fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                    Text(label, color = Muted, fontSize = 10.sp)
+                    Text(label + if (expandedMonth == month.month) "  ⌃" else "  ⌄",
+                        color = Muted, fontSize = 10.sp)
                 }
             }
             if (expandedMonth == month.month && month.drivers.isNotEmpty()) {
@@ -1102,8 +1078,6 @@ private fun SeasonalityCard(seasonality: SeasonalitySummary, currency: String) {
                 }
             }
         }
-        Text("Prozentwerte sind Schätzungen aus Buchungen, keine Vorhersage einzelner Käufe.",
-            color = Muted, fontSize = 10.sp)
     }
 }
 
@@ -1279,8 +1253,10 @@ private fun RefreshFailureNotice(status: BankingConnectionStatus) {
 private fun ScreenTitle(title: String, subtitle: String) {
     Column {
         Text(title, color = Ink, fontSize = 28.sp, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.height(3.dp))
-        Text(subtitle, color = Muted, fontSize = 13.sp)
+        if (subtitle.isNotBlank()) {
+            Spacer(Modifier.height(3.dp))
+            Text(subtitle, color = Muted, fontSize = 13.sp)
+        }
     }
 }
 
