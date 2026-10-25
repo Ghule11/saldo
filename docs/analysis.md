@@ -19,5 +19,3 @@ Für die Kategorien „Geschenke“ und „Urlaub“ wird die Summe der letzten 
 ## Saison
 
 Die Saisonansicht bildet für jeden Kalendermonat den Durchschnitt seiner variablen Ausgaben über die verfügbaren Jahre und vergleicht ihn mit dem Durchschnitt aller betrachteten vollständigen Monate. Einnahmen werden nicht verrechnet. Bestätigte Abos, Bargeldbehebungen und erkannte Eigenüberträge zählen hier nicht als variable Ausgaben. Bei weniger als zwölf Monaten erscheinen keine Prozentwerte. Zwischen zwölf und 23 Monaten sind die Werte ausdrücklich vorläufig. „Sparen“, „Neutral“ und „Spielraum“ werden erst bei mindestens 24 Monaten mit jeweils zwei Beobachtungen pro Kalendermonat angezeigt. Die Kategorien, die den Unterschied am stärksten erklären, lassen sich pro Monat aufklappen. Ein hoher Anteil „Sonstiges“ wird als Einschränkung angezeigt. Die Saisonansicht ist standardmäßig eingeklappt.
-
-Am Ende der Seite können die aggregierten Ergebnisse als JSON geteilt werden. Alle Beträge im JSON sind ganzzahlige Centwerte; einzelne Umsätze und Kontodaten werden nicht exportiert.

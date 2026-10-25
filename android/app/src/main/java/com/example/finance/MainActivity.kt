@@ -831,7 +831,6 @@ private fun AnalysisScreen(
     modifier: Modifier
 ) {
     val today = LocalDate.now(BankTimeZone)
-    val context = LocalContext.current
     val report = remember(data, decisions, excluded, hiddenRecurring, includeReserves, today) {
         FinanceAnalysis.calculate(data, decisions, excluded, includeReserves, today,
             hiddenRecurring)
@@ -898,18 +897,6 @@ private fun AnalysisScreen(
                 item { OutflowChart(month, data.currency) }
             } else {
                 item { EmptyNote("Noch keine Monatsdaten verfügbar.") }
-            }
-        }
-        if (data.dataSource == "banking_production") item {
-            TextButton(onClick = {
-                val share = Intent(Intent.ACTION_SEND).apply {
-                    type = "text/plain"
-                    putExtra(Intent.EXTRA_SUBJECT, "Saldo Analyse")
-                    putExtra(Intent.EXTRA_TEXT, report.toJson(today, data.currency))
-                }
-                context.startActivity(Intent.createChooser(share, "Analysedaten als JSON teilen"))
-            }) {
-                Text("Analysedaten als JSON teilen", color = Muted, fontSize = 11.sp)
             }
         }
     }
