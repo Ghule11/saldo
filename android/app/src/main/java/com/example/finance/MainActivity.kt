@@ -48,6 +48,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -75,9 +76,11 @@ import androidx.core.view.WindowCompat
 import com.example.finance.ui.theme.FinanceTheme
 import java.text.NumberFormat
 import java.time.LocalDate
+import java.time.Month
 import java.time.OffsetDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.time.format.TextStyle
 import java.util.Currency
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
@@ -143,11 +146,14 @@ private fun FinanceApp(resumeVersion: Int) {
     val categoryStore = remember(context) { CategoryOverrideStore(context.applicationContext) }
     val subscriptionStore = remember(context) { SubscriptionDecisionStore(context.applicationContext) }
     val recurringStore = remember(context) { RecurringVisibilityStore(context.applicationContext) }
+    val analysisStore = remember(context) { AnalysisPreferencesStore(context.applicationContext) }
     var categoryOverrides by remember { mutableStateOf(categoryStore.load()) }
     var merchantRules by remember { mutableStateOf(categoryStore.loadMerchantRules()) }
     var subscriptionDecisions by remember { mutableStateOf(subscriptionStore.load()) }
     var parentSenders by remember { mutableStateOf(categoryStore.loadParentSenders()) }
     var hiddenRecurring by remember { mutableStateOf(recurringStore.load()) }
+    var excludedFromAnalysis by remember { mutableStateOf(analysisStore.excludedIdentities()) }
+    var includeReserves by remember { mutableStateOf(analysisStore.includeReserves()) }
     var editingTransaction by remember { mutableStateOf<FinanceTransaction?>(null) }
     var selectedTransaction by remember { mutableStateOf<FinanceTransaction?>(null) }
 
@@ -349,6 +355,12 @@ private fun FinanceApp(resumeVersion: Int) {
                 detailTransaction, categorized, categorySource,
                 onBack = { selectedTransaction = null },
                 onEditCategory = { editingTransaction = detailTransaction },
+                excludedFromAnalysis = detailTransaction.identity in excludedFromAnalysis,
+                onToggleAnalysis = {
+                    val exclude = detailTransaction.identity !in excludedFromAnalysis
+                    analysisStore.setExcluded(detailTransaction.identity, exclude)
+                    excludedFromAnalysis = analysisStore.excludedIdentities()
+                },
                 modifier = modifier
             )
         } else when (selectedTab) {
@@ -359,7 +371,13 @@ private fun FinanceApp(resumeVersion: Int) {
             AppTab.Transactions -> screenStateHolder.SaveableStateProvider("transactions") {
                 TransactionsScreen(categorized, months, { selectedTransaction = it }, modifier)
             }
-            AppTab.Analysis -> AnalysisScreen(categorized, months, modifier)
+            AppTab.Analysis -> AnalysisScreen(
+                categorized, months, subscriptionDecisions, excludedFromAnalysis, includeReserves,
+                onIncludeReserves = { include ->
+                    analysisStore.setIncludeReserves(include)
+                    includeReserves = include
+                }, modifier
+            )
             AppTab.Account -> AccountScreen(
                 categorized, months, categoryOverrides.size + parentSenders.size + merchantRules.size,
                 merchantRules, subscriptionDecisions, ::removeMerchantRule, ::resetSubscriptionDecision,
@@ -680,6 +698,8 @@ private fun TransactionDetailScreen(
     categorySource: String,
     onBack: () -> Unit,
     onEditCategory: () -> Unit,
+    excludedFromAnalysis: Boolean,
+    onToggleAnalysis: () -> Unit,
     modifier: Modifier
 ) {
     val incoming = transaction.amountCents >= 0
@@ -730,6 +750,20 @@ private fun TransactionDetailScreen(
                 Text(categorySource, color = Muted, fontSize = 11.sp)
                 Spacer(Modifier.height(12.dp))
                 ActionButton("Kategorie ändern", onEditCategory)
+            }
+        }
+        if (transaction.identity.isNotBlank()) item {
+            PanelCard {
+                Text("Analyse", color = Ink, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(6.dp))
+                Text(if (excludedFromAnalysis)
+                    "Diese Buchung zählt nicht für Prognose, Rücklagen und Saison."
+                else "Diese Buchung zählt für Prognose, Rücklagen und Saison.",
+                    color = Muted, fontSize = 12.sp)
+                TextButton(onClick = onToggleAnalysis) {
+                    Text(if (excludedFromAnalysis) "Wieder berücksichtigen" else "Aus Analyse ausschließen",
+                        color = Purple)
+                }
             }
         }
         item {
@@ -785,35 +819,291 @@ private fun dayHeading(value: String): String = runCatching {
 }.getOrDefault(value)
 
 @Composable
-private fun AnalysisScreen(data: FinanceOverview, months: List<MonthlySnapshot>, modifier: Modifier) {
+private fun AnalysisScreen(
+    data: FinanceOverview,
+    months: List<MonthlySnapshot>,
+    decisions: Map<String, SubscriptionDecision>,
+    excluded: Set<String>,
+    includeReserves: Boolean,
+    onIncludeReserves: (Boolean) -> Unit,
+    modifier: Modifier
+) {
+    val today = LocalDate.now(BankTimeZone)
+    val context = LocalContext.current
+    val report = remember(data, decisions, excluded, includeReserves, today) {
+        FinanceAnalysis.calculate(data, decisions, excluded, includeReserves, today)
+    }
     var monthKey by rememberSaveable { mutableStateOf(months.firstOrNull()?.key.orEmpty()) }
+    var showMonthlyDetails by rememberSaveable { mutableStateOf(false) }
     val month = months.firstOrNull { it.key == monthKey } ?: months.firstOrNull()
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(20.dp),
         verticalArrangement = Arrangement.spacedBy(17.dp)
     ) {
-        item { ScreenTitle("Analyse", "Monate und Ausgaben vergleichen") }
-        if (month != null) {
+        item { ScreenTitle("Analyse", "Prognose, Rücklagen und saisonale Muster") }
+        if (data.dataSource == "banking_production") {
+            item { DataSourceBanner(data) }
+            item { ForecastCard(report.forecast, data.currency, data.fetchedAt) }
+            item { ReservesCard(report.reserves, data.currency, includeReserves, onIncludeReserves) }
+            item { SeasonalityCard(report.seasonality, data.currency) }
+        } else {
             item {
-                Row(
-                    modifier = Modifier.horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    months.forEach { option ->
-                        ChoiceChip(option.shortLabel, month.key == option.key) { monthKey = option.key }
+                EmptyNote("Prognose und Rücklagen erscheinen mit deinen Bank-Austria-Daten. " +
+                    "Testdaten und reine Kontoauszüge zeigen nur den Monatsverlauf.")
+            }
+        }
+        item {
+            TextButton(onClick = { showMonthlyDetails = !showMonthlyDetails }) {
+                Text(if (showMonthlyDetails) "Monatsdetails ausblenden" else "Monatsdetails anzeigen",
+                    color = Purple, fontWeight = FontWeight.SemiBold)
+            }
+        }
+        if (showMonthlyDetails) {
+            if (month != null) {
+                item {
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        months.forEach { option ->
+                            ChoiceChip(option.shortLabel, month.key == option.key) { monthKey = option.key }
+                        }
                     }
                 }
+                item { SectionHeading(month.label, month.transactions.size.toString() + " Umsätze") }
+                item { MonthlyTotals(month, data.currency) }
+                item { NetCard(month, data.currency) }
+                item { MonthlyChart(months, data.currency) }
+                item { CategoryChart(month, data.currency) }
+                item { OutflowChart(month, data.currency) }
+            } else {
+                item { EmptyNote("Noch keine Monatsdaten verfügbar.") }
             }
-            item { SectionHeading(month.label, "${month.transactions.size} Umsätze") }
-            item { MonthlyTotals(month, data.currency) }
-            item { NetCard(month, data.currency) }
-            item { MonthlyChart(months, data.currency) }
-            item { CategoryChart(month, data.currency) }
-            item { OutflowChart(month, data.currency) }
-        } else {
-            item { EmptyNote("Noch keine Monatsdaten verfügbar.") }
         }
+        if (data.dataSource == "banking_production") item {
+            TextButton(onClick = {
+                val share = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_SUBJECT, "Saldo Analyse")
+                    putExtra(Intent.EXTRA_TEXT, report.toJson(today, data.currency))
+                }
+                context.startActivity(Intent.createChooser(share, "Analysedaten als JSON teilen"))
+            }) {
+                Text("Analysedaten als JSON teilen", color = Muted, fontSize = 11.sp)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ForecastCard(forecast: MonthlyForecast, currency: String, fetchedAt: String?) {
+    val signalText = when (forecast.signal) {
+        ForecastSignal.InLimit -> "Im Rahmen"
+        ForecastSignal.Tight -> "Knapp"
+        ForecastSignal.Over -> "Über den Einnahmen"
+        null -> "Vorläufig"
+    }
+    val signalColor = when (forecast.signal) {
+        ForecastSignal.InLimit -> Green
+        ForecastSignal.Tight -> Color(0xFFFFBE7D)
+        ForecastSignal.Over -> Red
+        null -> Muted
+    }
+    PanelCard {
+        SectionHeading("Monatsprognose", signalText)
+        val stale = fetchedAt?.let { value ->
+            runCatching {
+                OffsetDateTime.parse(value).atZoneSameInstant(BankTimeZone).toLocalDate()
+                    .isBefore(LocalDate.now(BankTimeZone).minusDays(1))
+            }.getOrDefault(true)
+        } ?: true
+        if (stale) {
+            Spacer(Modifier.height(8.dp))
+            Text("Der Bankdatenstand ist älter als gestern. Die Schätzung kann Ausgaben übersehen.",
+                color = Color(0xFFFFBE7D), fontSize = 11.sp)
+        }
+        Spacer(Modifier.height(13.dp))
+        if (forecast.projectedCents != null) {
+            Text("Voraussichtliche Ausgaben", color = Muted, fontSize = 12.sp)
+            Text(formatCurrency(forecast.projectedCents, currency), color = Ink,
+                fontSize = 27.sp, fontWeight = FontWeight.Bold)
+        } else {
+            Text("Noch keine belastbare Prognose", color = Ink,
+                fontSize = 17.sp, fontWeight = FontWeight.Bold)
+            Text("Dafür braucht Saldo mindestens drei vollständige Vormonate mit regelmäßigen Buchungen.",
+                color = Muted, fontSize = 12.sp)
+        }
+        Spacer(Modifier.height(13.dp))
+        InfoRow("Bereits ausgegeben", formatCurrency(forecast.spentCents, currency))
+        InfoRow("Noch offene bestätigte Abos", formatCurrency(forecast.upcomingFixedCents, currency))
+        if (forecast.variableDailyCents != null) {
+            InfoRow("Variable Ausgaben pro Tag", formatCurrency(forecast.variableDailyCents, currency))
+        }
+        InfoRow("Resttage im Monat", forecast.remainingDays.toString())
+        if (forecast.expectedIncomeCents != null) {
+            InfoRow("Erwartete Einnahmen", formatCurrency(forecast.expectedIncomeCents, currency))
+        }
+        if (forecast.differenceCents != null) {
+            Spacer(Modifier.height(9.dp))
+            Text("Voraussichtliche Differenz: " + formatSigned(forecast.differenceCents, currency),
+                color = signalColor, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+        }
+        if (forecast.dailyRoomCents != null) {
+            Spacer(Modifier.height(10.dp))
+            Text("Tägliches Restbudget: " + formatSigned(forecast.dailyRoomCents, currency),
+                color = if (forecast.dailyRoomCents >= 0) Green else Red,
+                fontSize = 15.sp, fontWeight = FontWeight.Bold)
+            if (forecast.reservesIncluded && forecast.reserveDeductionCents > 0) {
+                Text("Mit " + formatCurrency(forecast.reserveDeductionCents, currency) +
+                    " noch offener Rücklage für diesen Monat.", color = Muted, fontSize = 11.sp)
+            }
+        }
+        if (forecast.fixedCosts.isNotEmpty()) {
+            Spacer(Modifier.height(9.dp))
+            Text("Offen: " + forecast.fixedCosts.joinToString(", ") { it.name },
+                color = Muted, fontSize = 11.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        }
+        Spacer(Modifier.height(12.dp))
+        Text("Schätzung aus " + forecast.historyMonths +
+            " Vormonaten: bisherige Ausgaben + offene Abos + Tageswert × Resttage. " +
+            "Einmalige große Wochen werden im Tageswert begrenzt.",
+            color = Muted, fontSize = 11.sp, lineHeight = 16.sp)
+    }
+}
+
+@Composable
+private fun ReservesCard(
+    reserves: ReserveSummary,
+    currency: String,
+    includeReserves: Boolean,
+    onIncludeReserves: (Boolean) -> Unit
+) {
+    var showAll by rememberSaveable { mutableStateOf(false) }
+    PanelCard {
+        SectionHeading("Rücklagen", reserves.entries.size.toString() +
+            if (reserves.entries.size == 1) " Vorschlag" else " Vorschläge")
+        Spacer(Modifier.height(10.dp))
+        if (reserves.entries.isEmpty()) {
+            Text("Noch keine wiederkehrenden größeren Zahlungen erkannt. " +
+                "Geschenke und Urlaub kannst du bei einzelnen Buchungen als Kategorie wählen.",
+                color = Muted, fontSize = 12.sp)
+        } else {
+            Text("Monatlich geschätzt: " + formatCurrency(reserves.monthlyCents, currency),
+                color = Purple, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            Text("Aus seltenen Wiederholungen und den letzten zwölf vollständigen Monaten " +
+                "bei Geschenken und Urlaub.", color = Muted, fontSize = 11.sp)
+            Spacer(Modifier.height(10.dp))
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("Im täglichen Restbudget abziehen", modifier = Modifier.weight(1f),
+                    color = Ink, fontSize = 12.sp)
+                Switch(checked = includeReserves, onCheckedChange = onIncludeReserves)
+            }
+            Text("Das verschiebt kein Geld. Bereits in diesem Monat bezahlte Beträge werden " +
+                "nicht doppelt abgezogen.", color = Muted, fontSize = 10.sp)
+            Spacer(Modifier.height(10.dp))
+            (if (showAll) reserves.entries else reserves.entries.take(5)).forEach { entry ->
+                Row(Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween) {
+                    Column(Modifier.weight(1f)) {
+                        Text(entry.name, color = Ink, fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold, maxLines = 1,
+                            overflow = TextOverflow.Ellipsis)
+                        Text(entry.period + " · " + formatCurrency(entry.yearlyCents, currency) +
+                            " pro Jahr", color = Muted, fontSize = 10.sp)
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Text(formatCurrency(entry.monthlyCents, currency) + "/Mo.",
+                        color = Purple, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                }
+            }
+            if (reserves.entries.size > 5) {
+                TextButton(onClick = { showAll = !showAll }) {
+                    Text(if (showAll) "Weniger anzeigen" else "Alle Rücklagen anzeigen",
+                        color = Purple, fontSize = 11.sp)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SeasonalityCard(seasonality: SeasonalitySummary, currency: String) {
+    var expandedMonth by rememberSaveable { mutableIntStateOf(0) }
+    PanelCard {
+        SectionHeading("Saisonanalyse", seasonality.historyMonths.toString() + " Monate")
+        Spacer(Modifier.height(10.dp))
+        if (seasonality.months.isEmpty()) {
+            Text("Für belastbare Monatsmuster braucht Saldo mindestens zwölf vollständige " +
+                "Monate ohne größere Lücken in der Umsatzhistorie.",
+                color = Muted, fontSize = 12.sp)
+            return@PanelCard
+        }
+        if (!seasonality.canClassify) {
+            Text("Vorläufige Werte: Für eine Monats-Einstufung braucht Saldo zwei " +
+                "vollständige Vergleichsjahre ohne größere Lücken.",
+                color = Color(0xFFFFBE7D), fontSize = 11.sp)
+            Spacer(Modifier.height(9.dp))
+        } else {
+            Text("Vergleich der variablen Ausgaben mit dem Durchschnitt aller Monate. " +
+                "„Sparen“ bedeutet: In diesem Kalendermonat waren Ausgaben bisher meist höher.",
+                color = Muted, fontSize = 11.sp)
+            Spacer(Modifier.height(9.dp))
+        }
+        if (seasonality.otherSharePercent >= 30) {
+            Text(seasonality.otherSharePercent.toString() +
+                "% der variablen Ausgaben sind noch „Sonstiges“. Eigene Kategorien verbessern die Muster.",
+                color = Color(0xFFFFBE7D), fontSize = 11.sp)
+            Spacer(Modifier.height(9.dp))
+        }
+        seasonality.months.forEach { month ->
+            val name = Month.of(month.month).getDisplayName(TextStyle.FULL_STANDALONE, Locale.GERMAN)
+                .replaceFirstChar { it.titlecase(Locale.GERMAN) }
+            val label = when (month.signal) {
+                SeasonalSignal.Save -> "Sparen"
+                SeasonalSignal.Room -> "Spielraum"
+                SeasonalSignal.Neutral -> "Neutral"
+                null -> "Vorläufig"
+            }
+            val accent = when (month.signal) {
+                SeasonalSignal.Save -> Red
+                SeasonalSignal.Room -> Green
+                SeasonalSignal.Neutral -> Purple
+                null -> Muted
+            }
+            Row(Modifier.fillMaxWidth().clickable {
+                expandedMonth = if (expandedMonth == month.month) 0 else month.month
+            }.padding(vertical = 7.dp),
+                horizontalArrangement = Arrangement.SpaceBetween) {
+                Column(Modifier.weight(1f)) {
+                    Text(name, color = Ink, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    if (month.drivers.isNotEmpty()) {
+                        Text(month.drivers.take(2).joinToString(" · ") { driver ->
+                            driver.category + " " +
+                                (if (driver.deviationPercent >= 0) "+" else "") +
+                                driver.deviationPercent + "%"
+                        }, color = Muted, fontSize = 10.sp, maxLines = 2)
+                    }
+                }
+                Spacer(Modifier.width(8.dp))
+                Column(horizontalAlignment = Alignment.End) {
+                    Text((if (month.deviationPercent >= 0) "+" else "") +
+                        month.deviationPercent + "%", color = accent,
+                        fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Text(label, color = Muted, fontSize = 10.sp)
+                }
+            }
+            if (expandedMonth == month.month && month.drivers.isNotEmpty()) {
+                month.drivers.forEach { driver ->
+                    Text(driver.category + ": " + formatCurrency(driver.averageCents, currency) +
+                        " statt " + formatCurrency(driver.baselineCents, currency) +
+                        " im Monatsmittel", color = Muted, fontSize = 10.sp,
+                        modifier = Modifier.padding(start = 10.dp, bottom = 5.dp))
+                }
+            }
+        }
+        Text("Prozentwerte sind Schätzungen aus Buchungen, keine Vorhersage einzelner Käufe.",
+            color = Muted, fontSize = 10.sp)
     }
 }
 

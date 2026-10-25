@@ -32,6 +32,8 @@ Older Bank Austria transactions can be imported once from a 24You CSV export wit
 
 The Production Worker also records the outcome of each scheduled refresh without account data in its diagnostics. Saldo warns when the latest scheduled refresh failed and checks the cached status again when the app returns to the foreground.
 
+The Android analysis page now estimates the current month's spending, expected income, and daily room from cached transactions. It offers optional monthly reserves for infrequent expenses and shows seasonal category patterns when enough complete history exists. A booking can be excluded from analysis without removing it from the transaction list. The analysis is calculated locally and can be shared as aggregate JSON; it makes no new banking requests. See [docs/analysis.md](docs/analysis.md).
+
 ## Run locally
 
 - Start the backend project in `backend/Finance.Api/` with its `https` launch profile (ports `7129` for the desktop callback and `5006` for the emulator API). A locally trusted development certificate for `localhost` is required.

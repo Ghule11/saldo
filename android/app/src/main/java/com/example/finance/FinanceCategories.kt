@@ -15,6 +15,8 @@ enum class TransactionCategory(val label: String) {
     Shopping("Shopping"),
     Health("Gesundheit"),
     Leisure("Freizeit"),
+    Gifts("Geschenke"),
+    Travel("Urlaub"),
     Cash("Bargeld"),
     Taxes("Steuern & Gebühren"),
     Other("Sonstiges")
@@ -52,6 +54,9 @@ object FinanceCategories {
             restaurantPattern.containsMatchIn(text) -> TransactionCategory.Restaurants
             transaction.category == "Shopping" || listOf("lookfantastic", "viori", "amazon", "zalando", "aliexpress", "thalia", "trafik", "m & s")
                 .any { it in text } -> TransactionCategory.Shopping
+            listOf("booking.com", "airbnb", "hotel", "flugreise", "flugticket").any { it in text } ->
+                TransactionCategory.Travel
+            "geschenk" in text -> TransactionCategory.Gifts
             listOf("optik", "apotheke", "pharmacy", "arzt", "doctor", "dentist")
                 .any { it in text } -> TransactionCategory.Health
             transaction.category == "Freizeit" || listOf("kino", "cinema", "steamgames", "steam purchase", "g2a.com")

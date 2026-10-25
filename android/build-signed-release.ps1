@@ -1,5 +1,5 @@
 param(
-    [string]$OutputPath = (Join-Path $env:USERPROFILE 'Downloads\Saldo-1.1.apk')
+    [string]$OutputPath = (Join-Path $env:USERPROFILE 'Downloads\Saldo-1.2.apk')
 )
 
 $ErrorActionPreference = 'Stop'
