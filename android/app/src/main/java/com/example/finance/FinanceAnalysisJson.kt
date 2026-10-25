@@ -11,7 +11,7 @@ fun FinanceAnalysisReport.toJson(asOf: LocalDate, currency: String): String {
         .put("variabler_tagesschnitt", nullable(forecast.variableDailyCents))
         .put("resttage", forecast.remainingDays)
         .put("prognose", nullable(forecast.projectedCents))
-        .put("erwartete_einnahmen", nullable(forecast.expectedIncomeCents))
+        .put("einnahmenbasis", nullable(forecast.incomeBasisCents))
         .put("differenz", nullable(forecast.differenceCents))
         .put("ampelstatus", when (forecast.signal) {
             ForecastSignal.InLimit -> "im_limit"

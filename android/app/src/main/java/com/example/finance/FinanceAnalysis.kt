@@ -17,7 +17,7 @@ data class MonthlyForecast(
     val fixedCosts: List<UpcomingFixedCost>,
     val variableDailyCents: Long?,
     val remainingDays: Int,
-    val expectedIncomeCents: Long?,
+    val incomeBasisCents: Long?,
     val projectedCents: Long?,
     val differenceCents: Long?,
     val dailyRoomCents: Long?,
@@ -88,7 +88,8 @@ object FinanceAnalysis {
         subscriptionDecisions: Map<String, SubscriptionDecision>,
         excludedIdentities: Set<String>,
         includeReserves: Boolean,
-        today: LocalDate
+        today: LocalDate,
+        hiddenIncomeKeys: Set<String> = emptySet()
     ): FinanceAnalysisReport {
         val currentMonth = YearMonth.from(today)
         val dated = overview.transactions.mapNotNull { transaction ->
@@ -96,9 +97,12 @@ object FinanceAnalysis {
             date?.takeIf { YearMonth.from(it) <= currentMonth }?.let { Dated(transaction, it) }
         }.filterNot { it.transaction.identity in excludedIdentities || isOwnTransfer(it.transaction) }
         val confirmed = subscriptionDecisions.filterValues { it == SubscriptionDecision.Confirmed }.keys
+        val regularIncome = FinanceInsights.recurringIncome(
+            overview.copy(transactions = dated.map { it.transaction })
+        ).filterNot { it.key in hiddenIncomeKeys }.sumOf { it.amountCents }
         val reserves = reserves(dated, confirmed, YearMonth.from(today))
         return FinanceAnalysisReport(
-            forecast(dated, confirmed, reserves, includeReserves, today),
+            forecast(dated, confirmed, reserves, includeReserves, regularIncome, today),
             reserves,
             seasonality(dated, confirmed, YearMonth.from(today))
         )
@@ -109,6 +113,7 @@ object FinanceAnalysis {
         confirmed: Set<String>,
         reserves: ReserveSummary,
         includeReserves: Boolean,
+        regularIncomeCents: Long,
         today: LocalDate
     ): MonthlyForecast {
         val current = YearMonth.from(today)
@@ -150,29 +155,23 @@ object FinanceAnalysis {
                 else (weekly.sumOf { it.coerceAtMost(cap) }.toDouble() / weekly.size / 7).roundToLong()
             }
         } else null
-        val monthlyIncome = historicalMonths.map { month ->
-            dated.filter { it.month == month && it.transaction.amountCents > 0 &&
-                !isCashDeposit(it.transaction) }.sumOf { it.transaction.amountCents }
-        }
         val actualIncome = dated.filter { it.month == current && it.transaction.amountCents > 0 &&
             !isCashDeposit(it.transaction) }.sumOf { it.transaction.amountCents }
-        val expectedIncome = if (historicalMonths.size >= 3) maxOf(actualIncome, median(monthlyIncome))
-            else null
+        val incomeBasis = maxOf(actualIncome, regularIncomeCents).takeIf { it > 0 }
         val remainingDays = current.lengthOfMonth() - today.dayOfMonth
         val projected = dailyRate?.let { spent + upcomingFixed + it * remainingDays }
-        val difference = if (projected != null && expectedIncome != null) expectedIncome - projected else null
+        val difference = if (projected != null && incomeBasis != null) incomeBasis - projected else null
         val reserveDeduction = if (includeReserves) reserves.remainingThisMonthCents else 0L
-        val dailyRoom = if (dailyRate != null && expectedIncome != null &&
-            expectedIncome > 0 && remainingDays > 0)
-            (expectedIncome - spent - upcomingFixed - reserveDeduction) / remainingDays else null
-        val signal = if (difference == null || expectedIncome == null || expectedIncome <= 0) null
+        val dailyRoom = if (dailyRate != null && incomeBasis != null && remainingDays > 0)
+            (incomeBasis - spent - upcomingFixed - reserveDeduction) / remainingDays else null
+        val signal = if (difference == null || incomeBasis == null) null
             else when {
                 difference < 0 -> ForecastSignal.Over
-                difference < maxOf(2_000L, expectedIncome / 10) -> ForecastSignal.Tight
+                difference < maxOf(2_000L, incomeBasis / 10) -> ForecastSignal.Tight
                 else -> ForecastSignal.InLimit
             }
         return MonthlyForecast(
-            spent, upcomingFixed, fixed, dailyRate, remainingDays, expectedIncome,
+            spent, upcomingFixed, fixed, dailyRate, remainingDays, incomeBasis,
             projected, difference, dailyRoom, signal, historicalMonths.size,
             includeReserves, reserveDeduction
         )

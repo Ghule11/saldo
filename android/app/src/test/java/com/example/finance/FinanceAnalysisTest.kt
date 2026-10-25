@@ -20,7 +20,10 @@ class FinanceAnalysisTest {
             }
             groceries + transaction(period.atDay(1), "Eltern", 5_000, "Eltern") +
                 transaction(period.atDay(12), "Microsoft", -200, "Abos")
-        } + transaction(LocalDate.of(2026, 8, 5), "Einmaliger Kauf", -100_000, "Shopping")
+        } + listOf(
+            transaction(LocalDate.of(2026, 8, 5), "Einmaliger Kauf", -100_000, "Shopping"),
+            transaction(LocalDate.of(2026, 8, 6), "Einmaliger Eingang", 100_000, "Einnahme")
+        )
         val current = listOf(
             transaction(LocalDate.of(2026, 10, 4), "BILLA", -1_000, "Lebensmittel"),
             transaction(LocalDate.of(2026, 10, 5), "Einzahlung Automat", 10_000, "Einnahme"),
@@ -37,10 +40,33 @@ class FinanceAnalysisTest {
         assertEquals(1_293L, report.forecast.spentCents)
         assertEquals(200L, report.forecast.upcomingFixedCents)
         assertEquals(100L, report.forecast.variableDailyCents)
-        assertEquals(5_000L, report.forecast.expectedIncomeCents)
+        assertEquals(5_000L, report.forecast.incomeBasisCents)
         assertEquals(3_093L, report.forecast.projectedCents)
         assertEquals(1_907L, report.forecast.differenceCents)
         assertEquals(ForecastSignal.Tight, report.forecast.signal)
+    }
+
+    @Test
+    fun incomeBasisUsesActualReceiptsAndRespectsHiddenRecurringIncome() {
+        val history = (7..9).flatMap { month ->
+            val period = YearMonth.of(2026, month)
+            (1..period.lengthOfMonth()).map { day ->
+                transaction(period.atDay(day), "BILLA", -100, "Lebensmittel")
+            } + transaction(period.atDay(2), "Eltern", 20_000, "Eltern")
+        }
+        val oneOff = transaction(LocalDate.of(2026, 8, 10), "Einmaliger Eingang", 100_000, "Einnahme")
+        val today = LocalDate.of(2026, 10, 15)
+        val input = overview(history + oneOff)
+        val recurringKey = FinanceInsights.recurringIncome(input).single().key
+
+        assertEquals(20_000L, FinanceAnalysis.calculate(input, emptyMap(), emptySet(),
+            false, today).forecast.incomeBasisCents)
+        assertNull(FinanceAnalysis.calculate(input, emptyMap(), emptySet(), false, today,
+            setOf(recurringKey)).forecast.incomeBasisCents)
+
+        val received = overview(input.transactions + transaction(today, "Eltern", 20_013, "Eltern"))
+        assertEquals(20_013L, FinanceAnalysis.calculate(received, emptyMap(), emptySet(),
+            false, today).forecast.incomeBasisCents)
     }
 
     @Test

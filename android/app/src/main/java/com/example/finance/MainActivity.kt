@@ -372,7 +372,8 @@ private fun FinanceApp(resumeVersion: Int) {
                 TransactionsScreen(categorized, months, { selectedTransaction = it }, modifier)
             }
             AppTab.Analysis -> AnalysisScreen(
-                categorized, months, subscriptionDecisions, excludedFromAnalysis, includeReserves,
+                categorized, months, subscriptionDecisions, excludedFromAnalysis,
+                hiddenRecurring, includeReserves,
                 onIncludeReserves = { include ->
                     analysisStore.setIncludeReserves(include)
                     includeReserves = include
@@ -824,17 +825,20 @@ private fun AnalysisScreen(
     months: List<MonthlySnapshot>,
     decisions: Map<String, SubscriptionDecision>,
     excluded: Set<String>,
+    hiddenRecurring: Set<String>,
     includeReserves: Boolean,
     onIncludeReserves: (Boolean) -> Unit,
     modifier: Modifier
 ) {
     val today = LocalDate.now(BankTimeZone)
     val context = LocalContext.current
-    val report = remember(data, decisions, excluded, includeReserves, today) {
-        FinanceAnalysis.calculate(data, decisions, excluded, includeReserves, today)
+    val report = remember(data, decisions, excluded, hiddenRecurring, includeReserves, today) {
+        FinanceAnalysis.calculate(data, decisions, excluded, includeReserves, today,
+            hiddenRecurring)
     }
     var monthKey by rememberSaveable { mutableStateOf(months.firstOrNull()?.key.orEmpty()) }
     var showMonthlyDetails by rememberSaveable { mutableStateOf(false) }
+    var showSeasonality by rememberSaveable { mutableStateOf(false) }
     val month = months.firstOrNull { it.key == monthKey } ?: months.firstOrNull()
     LazyColumn(
         modifier = modifier.fillMaxSize(),
@@ -846,7 +850,13 @@ private fun AnalysisScreen(
             item { DataSourceBanner(data) }
             item { ForecastCard(report.forecast, data.currency, data.fetchedAt) }
             item { ReservesCard(report.reserves, data.currency, includeReserves, onIncludeReserves) }
-            item { SeasonalityCard(report.seasonality, data.currency) }
+            item {
+                TextButton(onClick = { showSeasonality = !showSeasonality }) {
+                    Text(if (showSeasonality) "Saisonanalyse ausblenden" else "Saisonanalyse anzeigen",
+                        color = Purple, fontWeight = FontWeight.SemiBold)
+                }
+            }
+            if (showSeasonality) item { SeasonalityCard(report.seasonality, data.currency) }
         } else {
             item {
                 EmptyNote("Prognose und Rücklagen erscheinen mit deinen Bank-Austria-Daten. " +
@@ -941,9 +951,6 @@ private fun ForecastCard(forecast: MonthlyForecast, currency: String, fetchedAt:
             InfoRow("Variable Ausgaben pro Tag", formatCurrency(forecast.variableDailyCents, currency))
         }
         InfoRow("Resttage", forecast.remainingDays.toString())
-        if (forecast.expectedIncomeCents != null) {
-            InfoRow("Erwartete Einnahmen", formatCurrency(forecast.expectedIncomeCents, currency))
-        }
         if (forecast.differenceCents != null) {
             Spacer(Modifier.height(9.dp))
             Text("Differenz: " + formatSigned(forecast.differenceCents, currency),
