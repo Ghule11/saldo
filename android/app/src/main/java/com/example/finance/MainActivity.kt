@@ -7,7 +7,9 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.selection.selectable
@@ -61,7 +63,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
@@ -101,6 +108,60 @@ private enum class AppTab(val title: String) {
     Transactions("Umsätze"),
     Analysis("Analyse"),
     Account("Konto")
+}
+
+@Composable
+private fun TabIcon(tab: AppTab, selected: Boolean) {
+    val glyphColor = if (selected) Background else Muted
+    Box(
+        Modifier.size(34.dp).clip(CircleShape)
+            .background(if (selected) Purple else Color.Transparent)
+            .border(1.dp, if (selected) Purple else Divider, CircleShape),
+        contentAlignment = Alignment.Center
+    ) {
+        Canvas(Modifier.size(20.dp)) {
+            val unit = size.width / 24f
+            fun point(x: Float, y: Float) = Offset(x * unit, y * unit)
+            val lineWidth = 1.8f * unit
+            when (tab) {
+                AppTab.Overview -> {
+                    val roof = Path().apply {
+                        moveTo(3f * unit, 11f * unit)
+                        lineTo(12f * unit, 4f * unit)
+                        lineTo(21f * unit, 11f * unit)
+                    }
+                    drawPath(roof, glyphColor, style = Stroke(lineWidth, cap = StrokeCap.Round, join = StrokeJoin.Round))
+                    drawLine(glyphColor, point(5f, 10f), point(5f, 20f), lineWidth, StrokeCap.Round)
+                    drawLine(glyphColor, point(19f, 10f), point(19f, 20f), lineWidth, StrokeCap.Round)
+                    drawLine(glyphColor, point(5f, 20f), point(19f, 20f), lineWidth, StrokeCap.Round)
+                    drawLine(glyphColor, point(10f, 20f), point(10f, 15f), lineWidth, StrokeCap.Round)
+                    drawLine(glyphColor, point(14f, 20f), point(14f, 15f), lineWidth, StrokeCap.Round)
+                    drawLine(glyphColor, point(10f, 15f), point(14f, 15f), lineWidth, StrokeCap.Round)
+                }
+                AppTab.Transactions -> {
+                    drawLine(glyphColor, point(7f, 19f), point(7f, 5f), lineWidth, StrokeCap.Round)
+                    drawLine(glyphColor, point(7f, 5f), point(3.5f, 8.5f), lineWidth, StrokeCap.Round)
+                    drawLine(glyphColor, point(7f, 5f), point(10.5f, 8.5f), lineWidth, StrokeCap.Round)
+                    drawLine(glyphColor, point(17f, 5f), point(17f, 19f), lineWidth, StrokeCap.Round)
+                    drawLine(glyphColor, point(17f, 19f), point(13.5f, 15.5f), lineWidth, StrokeCap.Round)
+                    drawLine(glyphColor, point(17f, 19f), point(20.5f, 15.5f), lineWidth, StrokeCap.Round)
+                }
+                AppTab.Analysis -> {
+                    drawLine(glyphColor, point(5f, 19f), point(5f, 12f), 3f * unit, StrokeCap.Round)
+                    drawLine(glyphColor, point(12f, 19f), point(12f, 5f), 3f * unit, StrokeCap.Round)
+                    drawLine(glyphColor, point(19f, 19f), point(19f, 9f), 3f * unit, StrokeCap.Round)
+                }
+                AppTab.Account -> {
+                    drawCircle(glyphColor, radius = 3f * unit, center = point(12f, 8f), style = Stroke(lineWidth))
+                    val shoulders = Path().apply {
+                        moveTo(4f * unit, 20f * unit)
+                        cubicTo(4f * unit, 12f * unit, 20f * unit, 12f * unit, 20f * unit, 20f * unit)
+                    }
+                    drawPath(shoulders, glyphColor, style = Stroke(lineWidth, cap = StrokeCap.Round))
+                }
+            }
+        }
+    }
 }
 
 class MainActivity : ComponentActivity() {
@@ -322,22 +383,19 @@ private fun FinanceApp(resumeVersion: Int) {
         bottomBar = {
             if (detailTransaction == null) Column(Modifier.background(Panel).navigationBarsPadding()) {
                 Box(Modifier.fillMaxWidth().height(1.dp).background(Divider))
-                Row(Modifier.fillMaxWidth().height(56.dp)) {
+                Row(Modifier.fillMaxWidth().height(72.dp)) {
                     AppTab.entries.forEach { tab ->
                         val selected = selectedTab == tab
                         Column(
                             Modifier.weight(1f).fillMaxHeight()
                                 .selectable(selected = selected, role = Role.Tab) { selectedTab = tab },
                             horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.Top
+                            verticalArrangement = Arrangement.Center
                         ) {
-                            Box(
-                                Modifier.width(28.dp).height(2.dp)
-                                    .background(if (selected) Purple else Color.Transparent)
-                            )
-                            Spacer(Modifier.height(16.dp))
+                            TabIcon(tab, selected)
+                            Spacer(Modifier.height(5.dp))
                             Text(tab.title, color = if (selected) Ink else Muted,
-                                fontSize = 12.sp, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium)
+                                fontSize = 11.sp, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium)
                         }
                     }
                 }
@@ -665,9 +723,13 @@ private fun TransactionsScreen(data: FinanceOverview, months: List<MonthlySnapsh
         }
         dayGroups.forEach { (day, transactions) ->
             item {
-                Row(Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 2.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text(dayHeading(day), color = Ink, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                    Text("${transactions.size} ${if (transactions.size == 1) "Buchung" else "Buchungen"}", color = Muted, fontSize = 11.sp)
+                Row(Modifier.fillMaxWidth().padding(top = 13.dp, bottom = 4.dp)
+                    .background(PanelRaised).height(36.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.width(3.dp).fillMaxHeight().background(Purple))
+                    Text(dayHeading(day), modifier = Modifier.weight(1f).padding(start = 10.dp),
+                        color = Ink, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    Text("${transactions.size} ${if (transactions.size == 1) "Buchung" else "Buchungen"}",
+                        modifier = Modifier.padding(end = 10.dp), color = Muted, fontSize = 10.sp)
                 }
             }
             items(transactions) { TransactionRow(it, data.currency, onTransactionClick) }
