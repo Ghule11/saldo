@@ -63,7 +63,8 @@ object FinanceInsights {
             key = key,
             label = label,
             shortLabel = shortLabel,
-            incomeCents = transactions.filter { it.amountCents > 0 }.sumOf { it.amountCents },
+            incomeCents = transactions.filter { it.amountCents > 0 && it.category != TransactionCategory.Cash.label }
+                .sumOf { it.amountCents },
             outcomeCents = transactions.filter { it.amountCents < 0 }.sumOf { -it.amountCents },
             transactions = transactions
         )

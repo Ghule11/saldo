@@ -38,6 +38,35 @@ class FinanceCategoriesTest {
         )
     }
 
+    @Test
+    fun cashDepositIsNotMonthlyIncome() {
+        val deposit = FinanceTransaction(
+            merchant = "Bareinzahlung",
+            detail = "Einzahlung Automat",
+            dateLabel = "01.01.2026",
+            bookingDate = "2026-01-01",
+            amountCents = 2_500,
+            category = "Eingang"
+        )
+        val income = deposit.copy(merchant = "Gutschrift", detail = "Überweisung", amountCents = 5_000)
+        val overview = FinanceOverview(
+            dataSource = "local_statement",
+            month = "Januar 2026",
+            accountInstitution = "Bank Austria",
+            accountName = "Konto",
+            currency = "EUR",
+            balanceCents = 7_500,
+            incomeCents = 0,
+            expensesCents = 0,
+            spending = emptyList(),
+            transactions = listOf(deposit, income)
+        )
+        val categorized = FinanceCategories.apply(overview, emptyMap())
+
+        assertEquals(TransactionCategory.Cash.label, categorized.transactions.first().category)
+        assertEquals(5_000L, FinanceInsights.months(categorized).single().incomeCents)
+    }
+
     private fun expense(merchant: String, detail: String = "POS Zahlung") = FinanceTransaction(
         merchant = merchant,
         originalMerchant = merchant,

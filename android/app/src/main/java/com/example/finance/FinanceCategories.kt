@@ -52,7 +52,14 @@ object FinanceCategories {
     )
 
     fun suggest(transaction: FinanceTransaction, allowSubscriptionSuggestion: Boolean = true): TransactionCategory {
-        if (transaction.amountCents > 0) return TransactionCategory.Income
+        if (transaction.amountCents > 0) {
+            return if (transaction.merchant.contains("Bareinzahlung", ignoreCase = true) ||
+                transaction.detail.contains("Einzahlung Automat", ignoreCase = true)) {
+                TransactionCategory.Cash
+            } else {
+                TransactionCategory.Income
+            }
+        }
         val text = "${transaction.merchant} ${transaction.detail}".lowercase(Locale.ROOT)
         val payee = "${transaction.merchant} ${transaction.originalMerchant}"
 
@@ -199,7 +206,7 @@ object FinanceCategories {
     }
 
     fun choices(transaction: FinanceTransaction): List<TransactionCategory> =
-        if (transaction.amountCents > 0) listOf(TransactionCategory.Income, TransactionCategory.Parents)
+        if (transaction.amountCents > 0) listOf(TransactionCategory.Income, TransactionCategory.Parents, TransactionCategory.Cash)
         else TransactionCategory.entries.filter { it !in setOf(TransactionCategory.Income, TransactionCategory.Parents) }
 }
 
