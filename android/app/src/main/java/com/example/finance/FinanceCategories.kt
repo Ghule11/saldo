@@ -25,6 +25,21 @@ enum class TransactionCategory(val label: String) {
 enum class SubscriptionDecision { Confirmed, Rejected }
 
 object FinanceCategories {
+    private val namedGroceries = Regex("(?iu)(?<!\\p{L})(?:etsan|b(?:a|ä|ae)ckerei|ankerbrot)(?!\\p{L})")
+    private val namedDrugstores = Regex("(?iu)(?<!\\p{L})(?:mueller|müller|parfuemerie douglas|parfümerie douglas)(?!\\p{L})")
+    private val namedRestaurants = Regex(
+        "(?iu)(?<!\\p{L})(?:yummy noodle|noodle king|soya noodles|fenomen|berliner d[oö]ner|" +
+            "vapiano|shodai|sukiyaki|nordsee|subway|chicken plus|modern asia|ferhat d[oö]ner|" +
+            "fedis dner|fedis doener|karakulah gastronomie|flos imbiss|cinnamood)(?!\\p{L})"
+    )
+    private val namedShopping = Regex(
+        "(?iu)(?<!\\p{L})(?:libro|new\\s*yorker|pull&bear|bershka|hm at\\d+|c&a store|action|" +
+            "media markt|mediam|smyths toys|ikea)(?!\\p{L})"
+    )
+    private val namedMobility = Regex("(?iu)(?<!\\p{L})(?:omv|wrlinien)(?!\\p{L})")
+    private val namedLeisure = Regex("(?iu)(?<!\\p{L})(?:bad hietzing|gaensehaeufe|gänsehäufel|ma44 huet[t]?el|wiener eislauf verein)(?!\\p{L})")
+    private val namedHealth = Regex("(?iu)(?<!\\p{L})margareten\\s*-?\\s*apo\\.?(?!\\p{L})")
+    private val namedCash = Regex("(?iu)^(?:barauszahlung filiale|abhebung automat)")
     private val groceryPattern = Regex("(?iu)(?<!\\p{L})(?:interspar|intersp\\.?|spar|billa|penny|hofer|lidl|aldi|netto)(?!\\p{L})")
     private val drugstorePattern = Regex("(?iu)(?<!\\p{L})(?:bipa|dm)(?!\\p{L})|drogerie|drogeriemarkt")
     private val restaurantPattern = Regex(
@@ -32,13 +47,42 @@ object FinanceCategories {
             "restaurant|pizzeria|pizza|sushi|lieferando|cafe|café|coffee|caterei|bortolotti|bongiorno"
     )
     private val monthlySubscriptionPattern = Regex(
-        "(?iu)spotify|netflix|disney\\+|disney plus|youtube premium|apple music|google one|" +
+        "(?iu)spotify|netflix|disney\\+|disney plus|youtube premium|apple music|google one|discord\\*? nitromonthly|" +
             "icloud\\+?|prime video|amazon prime|microsoft|msbill\\.info|office 365|chatgpt plus"
     )
 
     fun suggest(transaction: FinanceTransaction, allowSubscriptionSuggestion: Boolean = true): TransactionCategory {
         if (transaction.amountCents > 0) return TransactionCategory.Income
         val text = "${transaction.merchant} ${transaction.detail}".lowercase(Locale.ROOT)
+        val payee = "${transaction.merchant} ${transaction.originalMerchant}"
+
+        // The statement only names the payment processor; these submerchants are explicit.
+        if (payee.trim().equals("SUMUP SUMUP", ignoreCase = true)) {
+            when {
+                Regex("(?iu)sumup\\s+\\*friendly fire\\b").containsMatchIn(transaction.detail) ->
+                    return TransactionCategory.Leisure
+                Regex("(?iu)sumup\\s+\\*loris parfum\\b").containsMatchIn(transaction.detail) ->
+                    return TransactionCategory.Drugstore
+                Regex("(?iu)sumup\\s+\\*churros und co\\b").containsMatchIn(transaction.detail) ->
+                    return TransactionCategory.Restaurants
+            }
+        }
+
+        when {
+            namedGroceries.containsMatchIn(payee) -> return TransactionCategory.Groceries
+            namedDrugstores.containsMatchIn(payee) -> return TransactionCategory.Drugstore
+            namedRestaurants.containsMatchIn(payee) -> return TransactionCategory.Restaurants
+            namedShopping.containsMatchIn(payee) -> return TransactionCategory.Shopping
+            namedMobility.containsMatchIn(payee) -> return TransactionCategory.Mobility
+            namedLeisure.containsMatchIn(payee) -> return TransactionCategory.Leisure
+            namedHealth.containsMatchIn(payee) -> return TransactionCategory.Health
+            namedCash.containsMatchIn(payee) -> return TransactionCategory.Cash
+        }
+
+        // A private transfer's free-text purpose is not a reliable merchant signal.
+        if (Regex("(?iu)^\\s*(?:echtzeitüberweisung|online überweisung|überweisung)\\b")
+                .containsMatchIn(transaction.detail)
+        ) return TransactionCategory.Other
 
         return when {
             transaction.category == "Wohnen" || listOf("husleje", "miete", "wohnung", "electricity", "strom")
