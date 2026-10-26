@@ -8,7 +8,11 @@ Die Prognose erscheint nur mit mindestens drei aufeinanderfolgenden vollständig
 
 Offene Fixkosten sind bestätigte Abos mit einer Buchung in den letzten 62 Tagen, sofern im aktuellen Monat noch keine Belastung für diesen Händler vorliegt. Die Einnahmenbasis ist der höhere Wert aus bereits erhaltenen Einnahmen im aktuellen Monat und der Summe der erkannten regelmäßigen Eingänge. In der Übersicht ausgeblendete regelmäßige Eingänge zählen für diese Summe nicht. Bareinzahlungen und erkannte Eigenüberträge zählen dabei nicht als Einkommen.
 
-Prognose = bisherige Ausgaben + offene Fixkosten + variabler Tageswert × verbleibende Kalendertage. Die Differenz vergleicht diese Prognose mit der Einnahmenbasis. „Knapp“ bedeutet eine positive Differenz unter zehn Prozent der Einnahmenbasis oder unter 20 Euro; ein negativer Wert ist „Über den Einnahmen“. Das tägliche Restbudget teilt die Einnahmenbasis abzüglich bisheriger Ausgaben, offener Fixkosten und optionaler Rücklagen durch die verbleibenden Tage. Am letzten Tag wird kein Tageswert berechnet. Die Einnahmenbasis wird nicht als eigene Zeile in der App angezeigt; im JSON heißt sie `einnahmenbasis`.
+Prognose = bisherige Ausgaben + offene Fixkosten + variabler Tageswert × verbleibende Kalendertage. Die Differenz vergleicht diese Prognose mit der Einnahmenbasis. „Knapp“ bedeutet eine positive Differenz unter zehn Prozent der Einnahmenbasis oder unter 20 Euro; ein negativer Wert ist „Über den Einnahmen“. Das tägliche Restbudget teilt die Einnahmenbasis abzüglich bisheriger Ausgaben, offener Fixkosten und optionaler Rücklagen durch die verbleibenden Tage. Am letzten Tag wird kein Tageswert berechnet. Die Einnahmenbasis wird nicht als eigene Zeile in der App angezeigt.
+
+## Monatsvergleich
+
+Die Karte vergleicht die Ausgaben des laufenden Monats bis zum angezeigten Kalendertag mit dem Durchschnitt der drei vorangehenden Monate bis zu demselben Tag. Wenn einer dieser Monate kürzer ist, wird für alle vier Monate der letzte gemeinsame Tag verwendet. Erforderlich sind Buchungen in allen drei Vergleichsmonaten. Aus der Analyse ausgeschlossene Buchungen und erkannte Eigenüberträge zählen nicht mit.
 
 ## Rücklagen
 

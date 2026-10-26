@@ -143,6 +143,32 @@ class FinanceAnalysisTest {
         assertNull(forecast.dailyRoomCents)
     }
 
+    @Test
+    fun monthComparisonUsesSameAvailableDayAndIgnoresExcludedTransfers() {
+        val today = LocalDate.of(2026, 5, 31)
+        val excluded = transaction(LocalDate.of(2026, 5, 26), "Sonderfall", -5_000, "Shopping")
+        val transactions = listOf(
+            transaction(LocalDate.of(2026, 5, 27), "BILLA", -3_000, "Lebensmittel"),
+            transaction(LocalDate.of(2026, 5, 30), "BILLA", -7_000, "Lebensmittel"),
+            transaction(LocalDate.of(2026, 5, 27), "Umbuchung", -10_000, "Sonstiges"),
+            excluded,
+            transaction(LocalDate.of(2026, 4, 28), "BILLA", -2_000, "Lebensmittel"),
+            transaction(LocalDate.of(2026, 4, 29), "BILLA", -8_000, "Lebensmittel"),
+            transaction(LocalDate.of(2026, 3, 28), "BILLA", -4_000, "Lebensmittel"),
+            transaction(LocalDate.of(2026, 2, 28), "BILLA", -6_000, "Lebensmittel")
+        )
+        val comparison = FinanceAnalysis.calculate(overview(transactions), emptyMap(),
+            setOf(excluded.identity), false, today).monthComparison!!
+
+        assertEquals(28, comparison.dayOfMonth)
+        assertEquals(3_000L, comparison.currentCents)
+        assertEquals(4_000L, comparison.previousAverageCents)
+        assertEquals(-1_000L, comparison.differenceCents)
+        assertNull(FinanceAnalysis.calculate(overview(transactions.filterNot {
+            it.bookingDate?.startsWith("2026-03") == true
+        }), emptyMap(), emptySet(), false, today).monthComparison)
+    }
+
     private fun transaction(
         date: LocalDate, merchant: String, amount: Long, category: String
     ): FinanceTransaction {

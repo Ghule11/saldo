@@ -27,6 +27,13 @@ data class MonthlyForecast(
     val reserveDeductionCents: Long
 )
 
+data class MonthComparison(
+    val dayOfMonth: Int,
+    val currentCents: Long,
+    val previousAverageCents: Long,
+    val differenceCents: Long
+)
+
 data class ReserveEntry(
     val key: String,
     val name: String,
@@ -67,6 +74,7 @@ data class SeasonalitySummary(
 
 data class FinanceAnalysisReport(
     val forecast: MonthlyForecast,
+    val monthComparison: MonthComparison?,
     val reserves: ReserveSummary,
     val seasonality: SeasonalitySummary
 )
@@ -103,9 +111,25 @@ object FinanceAnalysis {
         val reserves = reserves(dated, confirmed, YearMonth.from(today))
         return FinanceAnalysisReport(
             forecast(dated, confirmed, reserves, includeReserves, regularIncome, today),
+            monthComparison(dated, today),
             reserves,
             seasonality(dated, confirmed, YearMonth.from(today))
         )
+    }
+
+    private fun monthComparison(dated: List<Dated>, today: LocalDate): MonthComparison? {
+        val currentMonth = YearMonth.from(today)
+        val previousMonths = (1L..3L).map { currentMonth.minusMonths(it) }
+        if (previousMonths.any { month -> dated.none { it.month == month } }) return null
+
+        val commonDay = minOf(today.dayOfMonth, previousMonths.minOf { it.lengthOfMonth() })
+        fun spentThrough(month: YearMonth): Long = dated.filter {
+            it.month == month && it.date.dayOfMonth <= commonDay && it.transaction.amountCents < 0
+        }.sumOf { -it.transaction.amountCents }
+
+        val current = spentThrough(currentMonth)
+        val average = (previousMonths.sumOf(::spentThrough).toDouble() / previousMonths.size).roundToLong()
+        return MonthComparison(commonDay, current, average, current - average)
     }
 
     private fun forecast(

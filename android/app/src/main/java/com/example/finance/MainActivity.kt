@@ -849,6 +849,9 @@ private fun AnalysisScreen(
         if (data.dataSource == "banking_production") {
             item { DataSourceBanner(data) }
             item { ForecastCard(report.forecast, data.currency, data.fetchedAt) }
+            report.monthComparison?.let { comparison ->
+                item { MonthComparisonCard(comparison, data.currency) }
+            }
             item {
                 TextButton(onClick = { showReserves = !showReserves }) {
                     Text(if (showReserves) "Rücklagen ausblenden" else "Rücklagen anzeigen",
@@ -899,6 +902,45 @@ private fun AnalysisScreen(
                 item { EmptyNote("Noch keine Monatsdaten verfügbar.") }
             }
         }
+    }
+}
+
+@Composable
+private fun MonthComparisonCard(comparison: MonthComparison, currency: String) {
+    val maximum = maxOf(comparison.currentCents, comparison.previousAverageCents, 1L)
+    PanelCard {
+        SectionHeading("Monatsvergleich", "bis ${comparison.dayOfMonth}.")
+        Spacer(Modifier.height(13.dp))
+        ComparisonBar("Dieser Monat", comparison.currentCents, maximum, Purple, currency)
+        Spacer(Modifier.height(12.dp))
+        ComparisonBar("Ø letzte 3 Monate", comparison.previousAverageCents, maximum,
+            Color(0xFF726483), currency)
+        Spacer(Modifier.height(12.dp))
+        val difference = comparison.differenceCents
+        Text(when {
+            difference < 0 -> formatCurrency(-difference, currency) + " weniger"
+            difference > 0 -> formatCurrency(difference, currency) + " mehr"
+            else -> "Gleichauf"
+        }, color = when {
+            difference < 0 -> Green
+            difference > 0 -> Red
+            else -> Muted
+        }, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+@Composable
+private fun ComparisonBar(label: String, amount: Long, maximum: Long, accent: Color,
+                          currency: String) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text(label, color = Muted, fontSize = 12.sp)
+        Text(formatCurrency(amount, currency), color = Ink, fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold)
+    }
+    Spacer(Modifier.height(5.dp))
+    Box(Modifier.fillMaxWidth().height(7.dp).clip(CircleShape).background(PurpleMuted)) {
+        Box(Modifier.fillMaxWidth((amount.toFloat() / maximum).coerceIn(0f, 1f))
+            .fillMaxHeight().background(accent))
     }
 }
 
