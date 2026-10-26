@@ -131,7 +131,12 @@ object FinanceCategories {
         .trim()
 
     fun displayMerchant(merchant: String): String {
-        val value = merchant.lowercase(Locale.ROOT)
+        val cardMerchant = Regex("(?iu)^\\s*(?:pos|e-comm)\\b.*?\\sO\\s+(.+)$")
+            .find(merchant)?.groupValues?.get(1)?.trim()
+        val visible = cardMerchant?.replace(Regex("(?iu)\\s+(?:wien|vienna)\\s+\\d{4,5}$"), "")
+            ?.replace(Regex("(?iu)\\b(wien|vienna)\\s+\\1$"), "$1")
+            ?.ifBlank { merchant } ?: merchant
+        val value = visible.lowercase(Locale.ROOT)
         return when {
             "google one" in value -> "Google One"
             "microsoft" in value -> "Microsoft"
@@ -156,7 +161,7 @@ object FinanceCategories {
             Regex("(?iu)(?<!\\p{L})spar(?!\\p{L})").containsMatchIn(value) -> "SPAR"
             Regex("(?iu)(?<!\\p{L})penny(?!\\p{L})").containsMatchIn(value) -> "PENNY"
             "bargeldbehebung" in value -> "Bargeldbehebung"
-            else -> merchant.take(48).trim()
+            else -> visible.take(48).trim()
         }
     }
 

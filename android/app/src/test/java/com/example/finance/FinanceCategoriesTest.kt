@@ -67,6 +67,19 @@ class FinanceCategoriesTest {
         assertEquals(5_000L, FinanceInsights.months(categorized).single().incomeCents)
     }
 
+    @Test
+    fun cardNarrativeShowsPayeeWithoutLosingOriginalText() {
+        assertEquals("7154 WIEN", FinanceCategories.displayMerchant(
+            "POS 2,93 AT D21 24.10. 17:52 O 7154 WIEN WIEN 1070"
+        ))
+        assertEquals("7154 WIEN", FinanceCategories.displayMerchant(
+            "POS 2,93 AT D21 24.10. 17:52 O 7154 WIEN WIEN"
+        ))
+        assertEquals("PENNY", FinanceCategories.displayMerchant(
+            "POS 2,48 AT D21 20.10. 10:41 O PENNY DANKT 7800565 WIEN 1050"
+        ))
+    }
+
     private fun expense(merchant: String, detail: String = "POS Zahlung") = FinanceTransaction(
         merchant = merchant,
         originalMerchant = merchant,

@@ -10,6 +10,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -22,6 +23,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -35,15 +37,10 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
@@ -64,9 +61,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -87,22 +84,23 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-private val Background = Color(0xFF0B0911)
-private val Panel = Color(0xFF191522)
-private val PanelRaised = Color(0xFF251E32)
-private val Purple = Color(0xFFAC8BFF)
-private val PurpleMuted = Color(0xFF493963)
-private val Ink = Color(0xFFF6F2FF)
-private val Muted = Color(0xFFADA4BA)
-private val Green = Color(0xFF4EE3A1)
-private val Red = Color(0xFFFF708B)
+private val Background = Color(0xFF120E19)
+private val Panel = Color(0xFF1D1727)
+private val PanelRaised = Color(0xFF2A2039)
+private val Divider = Color(0xFF3A3046)
+private val Purple = Color(0xFFB38BEE)
+private val PurpleMuted = Color(0xFF49395D)
+private val Ink = Color(0xFFF4EFF9)
+private val Muted = Color(0xFFB4A9BF)
+private val Green = Color(0xFF6CD4A9)
+private val Red = Color(0xFFF08FA4)
 private val BankTimeZone = ZoneId.of("Europe/Vienna")
 
-private enum class AppTab(val title: String, val mark: String) {
-    Overview("Übersicht", "⌂"),
-    Transactions("Umsätze", "↕"),
-    Analysis("Analyse", "▥"),
-    Account("Konto", "◉")
+private enum class AppTab(val title: String) {
+    Overview("Übersicht"),
+    Transactions("Umsätze"),
+    Analysis("Analyse"),
+    Account("Konto")
 }
 
 class MainActivity : ComponentActivity() {
@@ -322,21 +320,26 @@ private fun FinanceApp(resumeVersion: Int) {
     Scaffold(
         containerColor = Background,
         bottomBar = {
-            if (detailTransaction == null) NavigationBar(containerColor = Panel) {
-                AppTab.entries.forEach { tab ->
-                    NavigationBarItem(
-                        selected = selectedTab == tab,
-                        onClick = { selectedTab = tab },
-                        icon = { Text(tab.mark, fontSize = 21.sp, fontWeight = FontWeight.Bold) },
-                        label = { Text(tab.title, fontSize = 11.sp) },
-                        colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = Purple,
-                            selectedTextColor = Purple,
-                            indicatorColor = PurpleMuted,
-                            unselectedIconColor = Muted,
-                            unselectedTextColor = Muted
-                        )
-                    )
+            if (detailTransaction == null) Column(Modifier.background(Panel).navigationBarsPadding()) {
+                Box(Modifier.fillMaxWidth().height(1.dp).background(Divider))
+                Row(Modifier.fillMaxWidth().height(56.dp)) {
+                    AppTab.entries.forEach { tab ->
+                        val selected = selectedTab == tab
+                        Column(
+                            Modifier.weight(1f).fillMaxHeight()
+                                .selectable(selected = selected, role = Role.Tab) { selectedTab = tab },
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Top
+                        ) {
+                            Box(
+                                Modifier.width(28.dp).height(2.dp)
+                                    .background(if (selected) Purple else Color.Transparent)
+                            )
+                            Spacer(Modifier.height(16.dp))
+                            Text(tab.title, color = if (selected) Ink else Muted,
+                                fontSize = 12.sp, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium)
+                        }
+                    }
                 }
             }
         }
@@ -384,7 +387,7 @@ private fun FinanceApp(resumeVersion: Int) {
                 merchantRules, subscriptionDecisions, ::removeMerchantRule, ::resetSubscriptionDecision,
                 bankingStatus, isLoading,
                 isConnecting, errorMessage, connectError, connectNotice, { reloadKey++ },
-                { startBankConnection() }, cloudConnected, FinanceApi.cloudEnvironment(),
+                { startBankConnection() }, cloudConnected,
                 { showCloudPairing = true },
                 {
                     scope.launch {
@@ -407,10 +410,15 @@ private fun FinanceApp(resumeVersion: Int) {
             onDismiss = { editingTransaction = null },
             onChoose = { choice, forMerchant ->
                 if (transaction.amountCents > 0) {
-                    categoryStore.save(transaction.identity, null)
-                    categoryOverrides = categoryOverrides - transaction.identity
-                    categoryStore.saveParentSender(transaction.merchant, choice == TransactionCategory.Parents)
-                    parentSenders = categoryStore.loadParentSenders()
+                    val individual = choice?.takeIf { it != TransactionCategory.Parents && it != TransactionCategory.Income }
+                    categoryStore.save(transaction.identity, individual)
+                    categoryOverrides = categoryOverrides.toMutableMap().apply {
+                        if (individual == null) remove(transaction.identity) else put(transaction.identity, individual)
+                    }
+                    if (choice != TransactionCategory.Cash) {
+                        categoryStore.saveParentSender(transaction.merchant, choice == TransactionCategory.Parents)
+                        parentSenders = categoryStore.loadParentSenders()
+                    }
                 } else if (forMerchant) {
                     val key = FinanceCategories.merchantKey(transaction.merchant)
                     categoryStore.save(transaction.identity, null)
@@ -447,9 +455,9 @@ private fun LoadingScreen() {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
-            CircularProgressIndicator(color = Purple)
-            Spacer(Modifier.height(16.dp))
-            Text("Saldo lädt deine Übersicht …", color = Muted)
+            CircularProgressIndicator(modifier = Modifier.size(24.dp), color = Purple, strokeWidth = 2.dp)
+            Spacer(Modifier.height(12.dp))
+            Text("Gespeicherte Daten laden …", color = Muted, fontSize = 13.sp)
         }
     }
 }
@@ -545,10 +553,10 @@ private fun OverviewScreen(
     val current = months.firstOrNull()
     LazyColumn(
         modifier = modifier.fillMaxSize(),
-        contentPadding = PaddingValues(20.dp),
-        verticalArrangement = Arrangement.spacedBy(17.dp)
+        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        item { Text("Saldo", color = Ink, fontSize = 28.sp, fontWeight = FontWeight.Bold) }
+        item { Text("Saldo", color = Ink, fontSize = 26.sp, fontWeight = FontWeight.SemiBold) }
         item { DataSourceBanner(data) }
         if (bankingStatus?.refresh?.lastOutcome == "failed") {
             item { RefreshFailureNotice(bankingStatus) }
@@ -594,11 +602,10 @@ private fun TransactionsScreen(data: FinanceOverview, months: List<MonthlySnapsh
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         state = listState,
-        contentPadding = PaddingValues(20.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(7.dp)
     ) {
-        item { ScreenTitle("Umsätze", "Suche und filtere deine Bewegungen") }
-        item { EmptyNote("Tippe auf einen Umsatz für alle Details und seine Kategorie.") }
+        item { ScreenTitle("Umsätze", "") }
         item {
             OutlinedTextField(
                 value = query,
@@ -645,22 +652,20 @@ private fun TransactionsScreen(data: FinanceOverview, months: List<MonthlySnapsh
         }
         item { SectionHeading("Bewegungen", "${filtered.size} ${if (filtered.size == 1) "Umsatz" else "Umsätze"}") }
         if (incomingCents > 0 || outgoingCents > 0) item {
-            PanelCard {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    if (incomingCents > 0) Column(Modifier.weight(1f)) {
-                        Text("Eingänge im Filter", color = Muted, fontSize = 11.sp)
-                        Text(formatCurrency(incomingCents, data.currency), color = Green, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-                    }
-                    if (outgoingCents > 0) Column(Modifier.weight(1f), horizontalAlignment = if (incomingCents > 0) Alignment.End else Alignment.Start) {
-                        Text("Ausgaben im Filter", color = Muted, fontSize = 11.sp)
-                        Text(formatCurrency(outgoingCents, data.currency), color = Red, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-                    }
+            Row(Modifier.fillMaxWidth().padding(vertical = 7.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                if (incomingCents > 0) Column(Modifier.weight(1f)) {
+                    Text("Eingänge im Filter", color = Muted, fontSize = 11.sp)
+                    Text(formatCurrency(incomingCents, data.currency), color = Green, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                }
+                if (outgoingCents > 0) Column(Modifier.weight(1f), horizontalAlignment = if (incomingCents > 0) Alignment.End else Alignment.Start) {
+                    Text("Ausgaben im Filter", color = Muted, fontSize = 11.sp)
+                    Text(formatCurrency(outgoingCents, data.currency), color = Red, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
                 }
             }
         }
         dayGroups.forEach { (day, transactions) ->
             item {
-                Row(Modifier.fillMaxWidth().padding(top = 7.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                Row(Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 2.dp), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text(dayHeading(day), color = Ink, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                     Text("${transactions.size} ${if (transactions.size == 1) "Buchung" else "Buchungen"}", color = Muted, fontSize = 11.sp)
                 }
@@ -730,15 +735,13 @@ private fun TransactionDetailScreen(
         }
         item {
             Column(
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp))
-                    .background(Brush.linearGradient(listOf(PanelRaised, PurpleMuted, Panel)))
-                    .padding(22.dp)
+                Modifier.fillMaxWidth().padding(vertical = 8.dp)
             ) {
-                Text(if (incoming) "EINGANG" else "AUSGABE", color = accent, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(12.dp))
-                Text(transaction.merchant, color = Ink, fontSize = 23.sp, lineHeight = 29.sp, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(12.dp))
-                Text(formatSigned(transaction.amountCents, data.currency), color = accent, fontSize = 29.sp, fontWeight = FontWeight.Bold)
+                Text(if (incoming) "Eingang" else "Ausgabe", color = Muted, fontSize = 12.sp)
+                Spacer(Modifier.height(9.dp))
+                Text(transaction.merchant, color = Ink, fontSize = 23.sp, lineHeight = 29.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(9.dp))
+                Text(formatSigned(transaction.amountCents, data.currency), color = accent, fontSize = 28.sp, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(7.dp))
                 Text(transaction.dateLabel, color = Muted, fontSize = 13.sp)
             }
@@ -842,8 +845,8 @@ private fun AnalysisScreen(
     val month = months.firstOrNull { it.key == monthKey } ?: months.firstOrNull()
     LazyColumn(
         modifier = modifier.fillMaxSize(),
-        contentPadding = PaddingValues(20.dp),
-        verticalArrangement = Arrangement.spacedBy(17.dp)
+        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item { ScreenTitle("Analyse", "") }
         if (data.dataSource == "banking_production") {
@@ -853,19 +856,13 @@ private fun AnalysisScreen(
                 item { MonthComparisonCard(comparison, data.currency) }
             }
             item {
-                TextButton(onClick = { showReserves = !showReserves }) {
-                    Text(if (showReserves) "Rücklagen ausblenden" else "Rücklagen anzeigen",
-                        color = Purple, fontWeight = FontWeight.SemiBold)
-                }
+                DisclosureRow("Rücklagen", showReserves) { showReserves = !showReserves }
             }
             if (showReserves) item {
                 ReservesCard(report.reserves, data.currency, includeReserves, onIncludeReserves)
             }
             item {
-                TextButton(onClick = { showSeasonality = !showSeasonality }) {
-                    Text(if (showSeasonality) "Saisonanalyse ausblenden" else "Saisonanalyse anzeigen",
-                        color = Purple, fontWeight = FontWeight.SemiBold)
-                }
+                DisclosureRow("Saisonanalyse", showSeasonality) { showSeasonality = !showSeasonality }
             }
             if (showSeasonality) item { SeasonalityCard(report.seasonality, data.currency) }
         } else {
@@ -875,10 +872,7 @@ private fun AnalysisScreen(
             }
         }
         item {
-            TextButton(onClick = { showMonthlyDetails = !showMonthlyDetails }) {
-                Text(if (showMonthlyDetails) "Monatsdetails ausblenden" else "Monatsdetails anzeigen",
-                    color = Purple, fontWeight = FontWeight.SemiBold)
-            }
+            DisclosureRow("Monatsdetails", showMonthlyDetails) { showMonthlyDetails = !showMonthlyDetails }
         }
         if (showMonthlyDetails) {
             if (month != null) {
@@ -901,6 +895,18 @@ private fun AnalysisScreen(
             } else {
                 item { EmptyNote("Noch keine Monatsdaten verfügbar.") }
             }
+        }
+    }
+}
+
+@Composable
+private fun DisclosureRow(title: String, expanded: Boolean, onClick: () -> Unit) {
+    Column(Modifier.fillMaxWidth()) {
+        Box(Modifier.fillMaxWidth().height(1.dp).background(Divider))
+        Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 13.dp),
+            horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(title, color = Ink, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+            Text(if (expanded) "Schließen" else "Anzeigen", color = Purple, fontSize = 12.sp)
         }
     }
 }
@@ -1144,17 +1150,16 @@ private fun AccountScreen(
     onRefresh: () -> Unit,
     onConnect: () -> Unit,
     cloudConnected: Boolean,
-    cloudEnvironment: String?,
     onCloudPair: () -> Unit,
     onCloudDisconnect: () -> Unit,
     modifier: Modifier
 ) {
     LazyColumn(
         modifier = modifier.fillMaxSize(),
-        contentPadding = PaddingValues(20.dp),
-        verticalArrangement = Arrangement.spacedBy(17.dp)
+        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        item { ScreenTitle("Konto", "Verbindung und Daten") }
+        item { ScreenTitle("Konto", "") }
         item { DataSourceBanner(data) }
         if (bankingStatus?.refresh?.lastOutcome == "failed") {
             item { RefreshFailureNotice(bankingStatus) }
@@ -1162,19 +1167,18 @@ private fun AccountScreen(
         item {
             PanelCard {
                 SectionHeading("Cloud-Verbindung", if (cloudConnected) "Gekoppelt" else "Nicht gekoppelt")
-                Spacer(Modifier.height(8.dp))
-                Text(if (cloudEnvironment == "PRODUCTION")
-                    "Bankdaten sind auch ohne laufenden PC erreichbar."
-                    else if (cloudConnected) "Testdaten sind auch ohne laufenden PC erreichbar."
-                    else "Einmaligen Kopplungscode eingeben, um Saldo unterwegs zu nutzen.",
-                    color = Muted, fontSize = 12.sp)
-                Spacer(Modifier.height(10.dp))
-                ActionButton(if (cloudConnected) "Cloud trennen" else "Cloud koppeln",
-                    if (cloudConnected) onCloudDisconnect else onCloudPair)
+                if (!cloudConnected) {
+                    Spacer(Modifier.height(8.dp))
+                    Text("Einmaligen Kopplungscode eingeben, um Saldo unterwegs zu nutzen.",
+                        color = Muted, fontSize = 12.sp)
+                }
+                Spacer(Modifier.height(6.dp))
+                if (cloudConnected) TextButton(onClick = onCloudDisconnect) {
+                    Text("Cloud trennen", color = Purple)
+                } else ActionButton("Cloud koppeln", onCloudPair)
             }
         }
         if (data.dataSource != "sample" || bankingStatus?.environment != "PRODUCTION") {
-            item { BalanceCard(data) }
             item {
                 PanelCard {
                     InfoRow("Konto", data.accountName)
@@ -1229,19 +1233,23 @@ private fun AccountScreen(
         if (bankingStatus?.environment == "PRODUCTION") item {
             val retryAt = bankingStatus.retryAfter.toLocalBankTime()
             EmptyNote(if (retryAt == null)
-                "Saldo nutzt gespeicherte Bankdaten und fragt nur bei Bedarf neu ab. Die importierten Umsätze bleiben verfügbar."
+                "Bankabrufe laufen täglich um 08:00, 17:00 und 21:00 Uhr."
             else
                 "Bankabruf bis $retryAt pausiert. Das Konto ist verbunden; eine erneute Freigabe ist dafür nicht nötig.")
         }
         if (bankingStatus?.environment == "PRODUCTION") {
             item {
-                ActionButton(
-                    if (isConnecting) "Verbindung wird gestartet …" else
-                        if (bankingStatus.accountCount > 0) "Bank Austria erneut verbinden" else "Bank Austria verbinden",
-                    onConnect,
-                    !isConnecting && bankingStatus.isConfigured && bankingStatus.isActive &&
-                        bankingStatus.retryAfter.toLocalBankTime() == null
-                )
+                val enabled = !isConnecting && bankingStatus.isConfigured && bankingStatus.isActive &&
+                    bankingStatus.retryAfter.toLocalBankTime() == null
+                if (bankingStatus.accountCount > 0) {
+                    TextButton(onClick = onConnect, enabled = enabled) {
+                        Text(if (isConnecting) "Verbindung wird gestartet …" else "Bank Austria erneut verbinden",
+                            color = Purple)
+                    }
+                } else {
+                    ActionButton(if (isConnecting) "Verbindung wird gestartet …" else "Bank Austria verbinden",
+                        onConnect, enabled)
+                }
             }
             if (!bankingStatus.isConfigured) item {
                 EmptyNote("Die Production-Anwendung muss zuerst lokal eingerichtet werden.")
@@ -1297,7 +1305,7 @@ private fun RefreshFailureNotice(status: BankingConnectionStatus) {
 @Composable
 private fun ScreenTitle(title: String, subtitle: String) {
     Column {
-        Text(title, color = Ink, fontSize = 28.sp, fontWeight = FontWeight.Bold)
+        Text(title, color = Ink, fontSize = 26.sp, fontWeight = FontWeight.SemiBold)
         if (subtitle.isNotBlank()) {
             Spacer(Modifier.height(3.dp))
             Text(subtitle, color = Muted, fontSize = 13.sp)
@@ -1308,12 +1316,9 @@ private fun ScreenTitle(title: String, subtitle: String) {
 @Composable
 private fun DataSourceBanner(data: FinanceOverview) {
     Row(
-        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp))
-            .background(PanelRaised).padding(horizontal = 15.dp, vertical = 12.dp),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(Modifier.size(8.dp).clip(CircleShape).background(Purple))
-        Spacer(Modifier.width(10.dp))
         val fetchedAt = data.fetchedAt?.let { value ->
             runCatching {
                 OffsetDateTime.parse(value).atZoneSameInstant(BankTimeZone)
@@ -1330,60 +1335,58 @@ private fun DataSourceBanner(data: FinanceOverview) {
             data.dataSource == "banking_production" -> "Verbundenes Bankkonto · Bank Austria"
             else -> "Beispieldaten"
         }
-        Text(label, color = Purple, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        Text(label, color = Muted, fontSize = 11.sp, fontWeight = FontWeight.Medium)
     }
 }
 
 @Composable
 private fun BalanceCard(data: FinanceOverview) {
     Column(
-        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp))
-            .background(Brush.linearGradient(listOf(Color(0xFF302044), Color(0xFF21182F), Color(0xFF181421))))
-            .padding(horizontal = 22.dp, vertical = 27.dp),
+        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp))
+            .background(PanelRaised).padding(horizontal = 20.dp, vertical = 22.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text("KONTOSTAND", color = Color(0xFFD2BFF2), fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
-        Spacer(Modifier.height(12.dp))
+        Text("Kontostand", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+        Spacer(Modifier.height(7.dp))
         Text(
             if (data.balanceAvailable) formatCurrency(data.balanceCents, data.currency) else "Aktuell nicht verfügbar",
             color = Ink,
-            fontSize = if (data.balanceAvailable) 36.sp else 20.sp,
-            fontWeight = FontWeight.Bold,
+            fontSize = if (data.balanceAvailable) 34.sp else 20.sp,
+            fontWeight = FontWeight.SemiBold,
             textAlign = TextAlign.Center,
             maxLines = 1,
             modifier = Modifier.fillMaxWidth()
         )
-        Spacer(Modifier.height(18.dp))
-        Box(Modifier.width(42.dp).height(3.dp).clip(CircleShape).background(Purple.copy(alpha = 0.8f)))
     }
 }
 
 @Composable
 private fun MonthlyTotals(month: MonthlySnapshot, currency: String) {
-    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
         TotalCard("Einnahmen", month.incomeCents, currency, Green, "+", Modifier.weight(1f))
+        Box(Modifier.width(1.dp).height(43.dp).background(Divider))
         TotalCard("Ausgaben", month.outcomeCents, currency, Red, "−", Modifier.weight(1f))
     }
 }
 
 @Composable
 private fun TotalCard(title: String, cents: Long, currency: String, accent: Color, sign: String, modifier: Modifier) {
-    PanelCard(modifier) {
+    Column(modifier) {
         Text(title, color = Muted, fontSize = 12.sp)
-        Spacer(Modifier.height(10.dp))
-        Text("$sign${formatCurrency(cents, currency)}", color = accent, fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+        Spacer(Modifier.height(5.dp))
+        Text("$sign${formatCurrency(cents, currency)}", color = accent, fontSize = 18.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
     }
 }
 
 @Composable
 private fun NetCard(month: MonthlySnapshot, currency: String) {
-    Row(
-        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp))
-            .background(PanelRaised).padding(16.dp),
-        horizontalArrangement = Arrangement.SpaceBetween
-    ) {
-        Text("Überschuss", color = Muted, fontSize = 13.sp)
-        Text(formatSigned(month.netCents, currency), color = if (month.netCents >= 0) Green else Red, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+    Column {
+        Box(Modifier.fillMaxWidth().height(1.dp).background(Divider))
+        Row(Modifier.fillMaxWidth().padding(vertical = 11.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text("Überschuss", color = Muted, fontSize = 13.sp)
+            Text(formatSigned(month.netCents, currency), color = if (month.netCents >= 0) Green else Red,
+                fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+        }
     }
 }
 
@@ -1495,8 +1498,7 @@ private fun SubscriptionsCard(
         SectionHeading("Abos", "${confirmed.size} bestätigt")
         if (confirmed.isNotEmpty()) {
             Spacer(Modifier.height(12.dp))
-            RecurringMonthlyTotal(confirmed.sumOf { it.amountCents }, currency, Red,
-                "Summe der letzten Beträge je bestätigtem Abo.")
+            RecurringMonthlyTotal(confirmed.sumOf { it.amountCents }, currency, Red)
             Spacer(Modifier.height(10.dp))
             confirmed.forEach { entry ->
                 RecurringOverviewRow(entry, currency, Red, "Kein Abo") {
@@ -1552,8 +1554,7 @@ private fun RecurringIncomeCard(
         SectionHeading("Regelmäßige Eingänge", "${visible.size} erkannt")
         if (visible.isNotEmpty()) {
             Spacer(Modifier.height(12.dp))
-            RecurringMonthlyTotal(visible.sumOf { it.amountCents }, currency, Green,
-                "Summe der letzten Beträge je angezeigtem Eingang.")
+            RecurringMonthlyTotal(visible.sumOf { it.amountCents }, currency, Green)
             Spacer(Modifier.height(10.dp))
             visible.forEach { item ->
                 RecurringOverviewRow(item, currency, Green, "Entfernen") { onHide(item.key) }
@@ -1569,10 +1570,9 @@ private fun RecurringIncomeCard(
 }
 
 @Composable
-private fun RecurringMonthlyTotal(amountCents: Long, currency: String, accent: Color, explanation: String) {
-    Text("Monatlich geschätzt: ${formatCurrency(amountCents, currency)}",
-        color = accent, fontSize = 15.sp, fontWeight = FontWeight.Bold)
-    Text(explanation, color = Muted, fontSize = 10.sp)
+private fun RecurringMonthlyTotal(amountCents: Long, currency: String, accent: Color) {
+    Text("Monatlich ca. ${formatCurrency(amountCents, currency)}",
+        color = accent, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
 }
 
 @Composable
@@ -1583,7 +1583,7 @@ private fun RecurringOverviewRow(
     actionLabel: String,
     onAction: () -> Unit
 ) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.Top) {
         Column(Modifier.weight(1f)) {
             Text(entry.name, color = Ink, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
                 maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -1611,22 +1611,23 @@ private fun LegendDot(label: String, color: Color) {
 private fun TransactionRow(transaction: FinanceTransaction, currency: String, onClick: (FinanceTransaction) -> Unit) {
     val incoming = transaction.amountCents >= 0
     val accent = if (incoming) Green else Red
-    Row(
-        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp))
-            .background(Panel).clickable { onClick(transaction) }.padding(horizontal = 14.dp, vertical = 13.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Box(Modifier.size(42.dp).clip(CircleShape).background(accent.copy(alpha = 0.14f)), contentAlignment = Alignment.Center) {
-            Text(if (incoming) "↓" else "↑", color = accent, fontSize = 19.sp, fontWeight = FontWeight.Bold)
+    Column(Modifier.fillMaxWidth().clickable { onClick(transaction) }) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 11.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(transaction.merchant, color = Ink, fontSize = 13.sp, fontWeight = FontWeight.Medium,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Spacer(Modifier.height(3.dp))
+                Text("${transaction.category} · ${transaction.dateLabel}", color = Muted,
+                    fontSize = 11.sp, maxLines = 1)
+            }
+            Spacer(Modifier.width(10.dp))
+            Text(formatSigned(transaction.amountCents, currency), color = accent,
+                fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
         }
-        Spacer(Modifier.width(11.dp))
-        Column(Modifier.weight(1f)) {
-            Text(transaction.merchant, color = Ink, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Spacer(Modifier.height(3.dp))
-            Text("${transaction.category} · ${transaction.dateLabel}", color = Muted, fontSize = 11.sp, maxLines = 1)
-        }
-        Spacer(Modifier.width(8.dp))
-        Text(formatSigned(transaction.amountCents, currency), color = accent, fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+        Box(Modifier.fillMaxWidth().height(1.dp).background(Divider))
     }
 }
 
@@ -1684,8 +1685,8 @@ private fun CategoryDialog(
 @Composable
 private fun SectionHeading(title: String, detail: String) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-        Text(title, color = Ink, fontSize = 17.sp, fontWeight = FontWeight.Bold)
-        Text(detail, color = Purple, fontSize = 11.sp, maxLines = 1)
+        Text(title, color = Ink, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+        Text(detail, color = Muted, fontSize = 11.sp, maxLines = 1)
     }
 }
 
@@ -1696,14 +1697,15 @@ private fun ChoiceChip(title: String, selected: Boolean, onClick: () -> Unit) {
         selected = selected,
         onClick = onClick,
         label = { Text(title, fontSize = 12.sp) },
+        shape = RoundedCornerShape(7.dp),
         colors = FilterChipDefaults.filterChipColors(
-            containerColor = Panel,
+            containerColor = Background,
             labelColor = Muted,
-            selectedContainerColor = PurpleMuted,
+            selectedContainerColor = PanelRaised,
             selectedLabelColor = Ink
         ),
         border = FilterChipDefaults.filterChipBorder(
-            borderColor = PurpleMuted,
+            borderColor = Divider,
             selectedBorderColor = Purple
         )
     )
@@ -1711,12 +1713,9 @@ private fun ChoiceChip(title: String, selected: Boolean, onClick: () -> Unit) {
 
 @Composable
 private fun PanelCard(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = Panel)
-    ) {
-        Column(Modifier.padding(16.dp), content = { content() })
+    Column(modifier.fillMaxWidth()) {
+        Box(Modifier.fillMaxWidth().height(1.dp).background(Divider))
+        Column(Modifier.padding(top = 15.dp, bottom = 5.dp), content = { content() })
     }
 }
 
@@ -1735,8 +1734,9 @@ private fun EmptyNote(message: String) {
 
 @Composable
 private fun ActionButton(label: String, onClick: () -> Unit, enabled: Boolean = true) {
-    Button(onClick = onClick, enabled = enabled, colors = ButtonDefaults.buttonColors(containerColor = Purple, contentColor = Background)) {
-        Text(label, fontWeight = FontWeight.Bold)
+    Button(onClick = onClick, enabled = enabled, shape = RoundedCornerShape(8.dp),
+        colors = ButtonDefaults.buttonColors(containerColor = Purple, contentColor = Background)) {
+        Text(label, fontWeight = FontWeight.SemiBold)
     }
 }
 
