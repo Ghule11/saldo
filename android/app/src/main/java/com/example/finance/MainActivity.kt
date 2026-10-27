@@ -1253,6 +1253,9 @@ private fun AccountScreen(
                 }
             }
         }
+        if (bankingStatus?.environment == "PRODUCTION" && bankingStatus.accountCount > 0) {
+            item { DailyRefreshSchedule(bankingStatus.refresh) }
+        }
         if (merchantRules.isNotEmpty()) item {
             PanelCard {
                 SectionHeading("Händlerregeln", "${merchantRules.size} gespeichert")
@@ -1292,12 +1295,10 @@ private fun AccountScreen(
         item {
             ActionButton(if (isLoading) "Wird geprüft …" else "Daten prüfen", onRefresh, !isLoading)
         }
-        if (bankingStatus?.environment == "PRODUCTION") item {
+        if (bankingStatus?.environment == "PRODUCTION" &&
+            bankingStatus.retryAfter.toLocalBankTime() != null) item {
             val retryAt = bankingStatus.retryAfter.toLocalBankTime()
-            EmptyNote(if (retryAt == null)
-                "Bankabrufe laufen täglich um 08:00, 12:00, 14:00, 17:00 und 21:00 Uhr."
-            else
-                "Bankabruf bis $retryAt pausiert. Das Konto ist verbunden; eine erneute Freigabe ist dafür nicht nötig.")
+            EmptyNote("Bankabruf bis $retryAt pausiert. Das Konto ist verbunden; eine erneute Freigabe ist dafür nicht nötig.")
         }
         if (bankingStatus?.environment == "PRODUCTION") {
             item {
@@ -1344,6 +1345,49 @@ private fun String?.toBankDateTime(): String? = this?.let { value ->
         OffsetDateTime.parse(value).atZoneSameInstant(BankTimeZone)
             .format(DateTimeFormatter.ofPattern("dd.MM. HH:mm", Locale.GERMANY))
     }.getOrNull()
+}
+
+@Composable
+private fun DailyRefreshSchedule(refresh: BankRefreshStatus?) {
+    val now = OffsetDateTime.now(BankTimeZone)
+    val today = now.toLocalDate()
+    val attempts = refresh?.attempts.orEmpty().mapNotNull { attempt ->
+        val localTime = runCatching {
+            OffsetDateTime.parse(attempt.at).atZoneSameInstant(BankTimeZone)
+        }.getOrNull() ?: return@mapNotNull null
+        if (localTime.toLocalDate() == today) localTime.hour to attempt.outcome else null
+    }.toMap()
+    val hours = listOf(8, 12, 14, 17, 21)
+
+    Column(Modifier.fillMaxWidth().padding(horizontal = 4.dp)) {
+        SectionHeading("Bankabrufe", "Heute")
+        Spacer(Modifier.height(8.dp))
+        hours.forEachIndexed { index, hour ->
+            val outcome = attempts[hour]
+            val label = when (outcome) {
+                "success" -> "Aktualisiert"
+                "rate_limited" -> "Banklimit"
+                "paused" -> "Pausiert"
+                "failed" -> "Fehler"
+                else -> if (hour > now.hour || hour == now.hour && now.minute < 15)
+                    "Geplant" else "Kein Ergebnis"
+            }
+            val color = when (outcome) {
+                "success" -> Green
+                "rate_limited", "paused" -> Color(0xFFFFBE7D)
+                "failed" -> Red
+                else -> Muted
+            }
+            Row(Modifier.fillMaxWidth().padding(vertical = 9.dp),
+                horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("%02d:00".format(Locale.GERMANY, hour), color = Ink, fontSize = 13.sp)
+                Text(label, color = color, fontSize = 12.sp)
+            }
+            if (index < hours.lastIndex) {
+                Box(Modifier.fillMaxWidth().height(1.dp).background(Divider))
+            }
+        }
+    }
 }
 
 @Composable

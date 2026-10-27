@@ -11,8 +11,8 @@ android {
         applicationId = "com.example.finance"
         minSdk = 26
         targetSdk = 34
-        versionCode = 12
-        versionName = "1.11"
+        versionCode = 13
+        versionName = "1.12"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "FINANCE_API_BASE_URL", "\"http://10.0.2.2:5006\"")

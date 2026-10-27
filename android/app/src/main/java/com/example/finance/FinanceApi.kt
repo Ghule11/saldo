@@ -60,7 +60,13 @@ data class BankingConnectionStatus(
 data class BankRefreshStatus(
     val lastAttemptAt: String?,
     val lastSuccessAt: String?,
-    val lastOutcome: String?
+    val lastOutcome: String?,
+    val attempts: List<BankRefreshAttempt> = emptyList()
+)
+
+data class BankRefreshAttempt(
+    val at: String,
+    val outcome: String
 )
 
 object FinanceApi {
@@ -112,10 +118,18 @@ object FinanceApi {
     fun fetchBankingStatus(): BankingConnectionStatus {
         val status = getJson("/api/banking/status")
         val refresh = status.optJSONObject("refresh")?.let {
+            val attemptsJson = it.optJSONArray("attempts")
+            val attempts = (0 until (attemptsJson?.length() ?: 0)).mapNotNull { index ->
+                val attempt = attemptsJson?.optJSONObject(index) ?: return@mapNotNull null
+                val at = attempt.optString("at").cleanValue() ?: return@mapNotNull null
+                val outcome = attempt.optString("outcome").cleanValue() ?: return@mapNotNull null
+                BankRefreshAttempt(at, outcome)
+            }
             BankRefreshStatus(
                 lastAttemptAt = it.optString("lastAttemptAt").cleanValue(),
                 lastSuccessAt = it.optString("lastSuccessAt").cleanValue(),
-                lastOutcome = it.optString("lastOutcome").cleanValue()
+                lastOutcome = it.optString("lastOutcome").cleanValue(),
+                attempts = attempts
             )
         }
         return BankingConnectionStatus(

@@ -155,17 +155,21 @@ export default {
     try {
       result = await bankingData(env, createProviderClient(env), false, true);
     } catch (error) {
+      const code = refreshFailureCode(error);
+      const outcome = code === "cooldown" ? "paused"
+        : code === "rate_limited" ? "rate_limited" : "failed";
       const failure = {
         at: attemptedAt,
         stage: error?.refreshStage || "preparation",
-        code: refreshFailureCode(error)
+        code
       };
       try {
         await writeEncryptedState(env, refreshStatusName(env), {
           lastAttemptAt: attemptedAt,
           lastSuccessAt: previous?.lastSuccessAt || null,
           lastOutcome: "failed",
-          lastFailure: failure
+          lastFailure: failure,
+          attempts: appendRefreshAttempt(previous, { at: attemptedAt, outcome, code })
         });
       } catch {
         console.warn("Scheduled refresh status could not be saved");
@@ -178,7 +182,8 @@ export default {
         lastAttemptAt: attemptedAt,
         lastSuccessAt: result.fetchedAt,
         lastOutcome: "success",
-        lastFailure: previous?.lastFailure || null
+        lastFailure: previous?.lastFailure || null,
+        attempts: appendRefreshAttempt(previous, { at: attemptedAt, outcome: "success" })
       });
     } catch {
       console.warn("Scheduled refresh success could not be saved");
@@ -187,11 +192,27 @@ export default {
 };
 
 function refreshFailureCode(error) {
-  if (error?.diagnosticCode) return error.diagnosticCode;
+  if (error?.diagnosticCode === "cooldown") return "cooldown";
   if (error?.status === 429) return "rate_limited";
+  if (error?.diagnosticCode) return error.diagnosticCode;
   if (error?.status === 409) return "session_unavailable";
   if (error?.status === 502) return "invalid_response";
   return "internal_error";
+}
+
+function refreshAttempts(previous) {
+  if (Array.isArray(previous?.attempts) && previous.attempts.length) return previous.attempts;
+  if (!previous?.lastAttemptAt || !previous?.lastOutcome) return [];
+  const code = previous.lastFailure?.at === previous.lastAttemptAt
+    ? previous.lastFailure.code : null;
+  const outcome = previous.lastOutcome === "success" ? "success"
+    : code === "cooldown" ? "paused"
+      : code === "rate_limited" || code === "provider_http_429" ? "rate_limited" : "failed";
+  return [{ at: previous.lastAttemptAt, outcome, ...(code ? { code } : {}) }];
+}
+
+function appendRefreshAttempt(previous, attempt) {
+  return [...refreshAttempts(previous), attempt].slice(-35);
 }
 
 async function probeEncryptedStorage(env) {
@@ -412,7 +433,7 @@ async function bankingStatus(env) {
     accountCount: session?.accountUids?.length || 0,
     isActive: applicationStatus?.active ?? true,
     retryAfter: rateLimit?.until > Date.now() ? new Date(rateLimit.until).toISOString() : null,
-    refresh
+    refresh: refresh ? { ...refresh, attempts: refreshAttempts(refresh) } : null
   };
 }
 
@@ -524,7 +545,8 @@ async function finishAuthorization(url, env) {
           lastAttemptAt: null,
           lastSuccessAt: null,
           lastOutcome: null,
-          lastFailure: previous?.lastFailure || null
+          lastFailure: previous?.lastFailure || null,
+          attempts: []
         });
       } catch {
         console.warn("Banking refresh status could not be reset");
@@ -562,7 +584,7 @@ async function bankingData(env, provider, allTransactions, scheduledRefresh = fa
     if (!scheduledRefresh && cached && cacheAge >= 0 && cacheAge < 24 * 60 * 60 * 1000) {
       return { ...cached, isCached: true };
     }
-    throw new SandboxError(429, "Die Bank erlaubt derzeit keinen weiteren Abruf.");
+    throw new SandboxError(429, "Die Bank erlaubt derzeit keinen weiteren Abruf.", "cooldown");
   }
 
   let refreshStage = "balances";
