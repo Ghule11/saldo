@@ -1,6 +1,6 @@
 # Saldo
 
-Private, Android-only personal finance app. The GitHub repository is named `finance-app`.
+Android-only personal finance app. The GitHub repository is named `saldo`.
 
 ## Project structure
 
