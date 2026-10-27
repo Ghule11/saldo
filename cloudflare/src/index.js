@@ -141,7 +141,7 @@ export default {
       hour: "2-digit", hourCycle: "h23"
     }).formatToParts(scheduledAt).map(part => [part.type, part.value]));
     const localHour = Number(parts.hour);
-    if (![8, 17, 21].includes(localHour)) return;
+    if (![8, 12, 14, 17, 21].includes(localHour)) return;
 
     const session = await readEncryptedState(env, sessionName(env));
     if (!session?.sessionId) return;

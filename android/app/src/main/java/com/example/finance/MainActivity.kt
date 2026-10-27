@@ -1295,7 +1295,7 @@ private fun AccountScreen(
         if (bankingStatus?.environment == "PRODUCTION") item {
             val retryAt = bankingStatus.retryAfter.toLocalBankTime()
             EmptyNote(if (retryAt == null)
-                "Bankabrufe laufen täglich um 08:00, 17:00 und 21:00 Uhr."
+                "Bankabrufe laufen täglich um 08:00, 12:00, 14:00, 17:00 und 21:00 Uhr."
             else
                 "Bankabruf bis $retryAt pausiert. Das Konto ist verbunden; eine erneute Freigabe ist dafür nicht nötig.")
         }
