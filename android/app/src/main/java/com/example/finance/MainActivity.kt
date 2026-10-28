@@ -649,9 +649,7 @@ private fun TransactionsScreen(data: FinanceOverview, months: List<MonthlySnapsh
             (direction == "Eingänge" && it.amountCents > 0) ||
             (direction == "Ausgaben" && it.amountCents < 0) }
         .filter { selectedCategory.isBlank() || it.category == selectedCategory }
-        .filter { query.isBlank() || it.merchant.contains(query, ignoreCase = true) ||
-            it.originalMerchant.contains(query, ignoreCase = true) ||
-            it.detail.contains(query, ignoreCase = true) }
+        .filter { it.matchesTransactionSearch(query, data.currency) }
         .sortedByDescending { it.bookingDate ?: "" }
     val incomingCents = filtered.filter { it.amountCents > 0 }.sumOf { it.amountCents }
     val outgoingCents = filtered.filter { it.amountCents < 0 }.sumOf { -it.amountCents }
@@ -767,6 +765,22 @@ private fun TransactionsScreen(data: FinanceOverview, months: List<MonthlySnapsh
             confirmButton = { TextButton(onClick = { showCategoryFilter = false }) { Text("Schließen", color = Purple) } }
         )
     }
+}
+
+private fun FinanceTransaction.matchesTransactionSearch(query: String, currency: String): Boolean {
+    val term = query.trim()
+    if (term.isEmpty()) return true
+    val amount = formatCurrency(kotlin.math.abs(amountCents), currency)
+    val amountTerm = term.replace('.', ',')
+    return merchant.contains(term, ignoreCase = true) ||
+        originalMerchant.contains(term, ignoreCase = true) ||
+        detail.contains(term, ignoreCase = true) ||
+        dateLabel.contains(term, ignoreCase = true) ||
+        bookingDate.orEmpty().contains(term, ignoreCase = true) ||
+        transactionDate.orEmpty().contains(term, ignoreCase = true) ||
+        transactionDate?.let { germanDate(it).contains(term, ignoreCase = true) } == true ||
+        amount.contains(amountTerm, ignoreCase = true) ||
+        (if (amountCents < 0) "-$amount" else "+$amount").contains(amountTerm, ignoreCase = true)
 }
 
 @Composable
