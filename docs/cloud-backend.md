@@ -23,8 +23,6 @@ Nach jedem geplanten Abruf speichert der Production-Worker verschlüsselt, wann 
 
 Die Android-App bietet beim Koppeln „Bank Austria“ und „Testdaten“ an. Nach Production-Kopplung öffnet „Bank Austria verbinden“ die Freigabe-URL im Browser des Geräts. Danach lädt „Daten aktualisieren“ die Bankdaten vom Cloud-Worker. „Cloud trennen“ widerruft nur das Gerätetoken; die verschlüsselten Cloud-Daten und die Bankfreigabe werden dadurch nicht automatisch gelöscht. Siehe auch [Datenschutz](privacy.md).
 
-Nach einem erfolgreichen Abruf speichert Android den angezeigten Kontostand, den Datenstand und die vollständigen geladenen Umsätze zusätzlich komprimiert und mit einem Schlüssel aus dem Android Keystore verschlüsselt im internen App-Speicher. Beim nächsten Start ist dieser letzte Stand sofort verfügbar, auch ohne Internet. Sobald Cloud-Daten erreichbar sind, ersetzt die App ihn durch den neuen Stand. Beim Wechsel der Cloud-Kopplung oder beim Trennen wird die lokale Kopie gelöscht. Android-Backups sind für die App deaktiviert. Der Offline-Stand löst keine zusätzlichen Bankabfragen aus.
-
 ## Betrieb
 
 Im Ordner `cloudflare/`:
