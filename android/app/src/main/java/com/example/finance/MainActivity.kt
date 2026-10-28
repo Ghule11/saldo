@@ -198,6 +198,7 @@ private fun FinanceApp(resumeVersion: Int) {
     val cloudStore = remember(context) {
         CloudConnectionStore(context.applicationContext).also { FinanceApi.configureCloud(it) }
     }
+    val offlineStore = remember(context) { OfflineSnapshotStore(context.applicationContext) }
     var cloudConnected by remember { mutableStateOf(cloudStore.credentials() != null) }
     var showCloudPairing by remember { mutableStateOf(false) }
     var isPairing by remember { mutableStateOf(false) }
@@ -288,7 +289,10 @@ private fun FinanceApp(resumeVersion: Int) {
         scope.launch {
             try {
                 withContext(Dispatchers.IO) { FinanceApi.pairCloud(code, environment) }
+                withContext(Dispatchers.IO) { offlineStore.clear() }
                 cloudConnected = true
+                overview = null
+                bankingStatus = null
                 showCloudPairing = false
                 reloadKey++
             } catch (exception: Exception) {
@@ -302,6 +306,15 @@ private fun FinanceApp(resumeVersion: Int) {
     LaunchedEffect(reloadKey, resumeVersion) {
         isLoading = true
         errorMessage = null
+        if (overview == null && cloudConnected) {
+            val cached = withContext(Dispatchers.IO) {
+                offlineStore.load(FinanceApi.cloudEnvironment())
+            }
+            if (cached != null) {
+                overview = cached.overview.copy(isCached = true)
+                bankingStatus = cached.status
+            }
+        }
         val importedHistory = withContext(Dispatchers.IO) {
             runCatching { FinanceApi.fetchImportedHistory() }.getOrNull()
         }
@@ -313,7 +326,15 @@ private fun FinanceApp(resumeVersion: Int) {
                 importedHistory
             } else try {
                 val bank = withContext(Dispatchers.IO) { FinanceApi.fetchDashboardOverview(status) }
-                FinanceApi.mergeImportedHistory(bank, importedHistory)
+                val merged = FinanceApi.mergeImportedHistory(bank, importedHistory)
+                overview = merged
+                if (cloudConnected && status.accountCount > 0 &&
+                    merged.dataSource in setOf("banking_production", "banking_sandbox")) {
+                    withContext(Dispatchers.IO) {
+                        runCatching { offlineStore.save(status.environment, merged, status) }
+                    }
+                }
+                merged
             } catch (exception: Exception) {
                 if (status.environment != "PRODUCTION") throw exception
                 val currentStatus = withContext(Dispatchers.IO) {
@@ -451,7 +472,10 @@ private fun FinanceApp(resumeVersion: Int) {
                     scope.launch {
                         try {
                             withContext(Dispatchers.IO) { FinanceApi.disconnectCloud() }
+                            withContext(Dispatchers.IO) { offlineStore.clear() }
                             cloudConnected = false
+                            overview = null
+                            bankingStatus = null
                             reloadKey++
                         } catch (exception: Exception) {
                             connectError = exception.message ?: "Cloud-Verbindung konnte nicht getrennt werden."
