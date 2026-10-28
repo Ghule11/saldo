@@ -640,6 +640,7 @@ private fun TransactionsScreen(data: FinanceOverview, months: List<MonthlySnapsh
     var monthKey by rememberSaveable { mutableStateOf("all") }
     var categoryFilter by rememberSaveable { mutableStateOf("") }
     var showCategoryFilter by remember { mutableStateOf(false) }
+    var showMonthPicker by remember { mutableStateOf(false) }
     val categories = data.transactions.map { it.category }.distinct().sorted()
     val selectedCategory = categoryFilter.takeIf { it in categories }.orEmpty()
     val selectedMonth = months.firstOrNull { it.key == monthKey }
@@ -656,6 +657,11 @@ private fun TransactionsScreen(data: FinanceOverview, months: List<MonthlySnapsh
     val outgoingCents = filtered.filter { it.amountCents < 0 }.sumOf { -it.amountCents }
     val dayGroups = filtered.groupBy { it.bookingDate ?: it.dateLabel.ifBlank { "Ohne Datum" } }
     val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    fun selectMonth(key: String) {
+        monthKey = key
+        scope.launch { listState.scrollToItem(0) }
+    }
 
     LazyColumn(
         modifier = modifier.fillMaxSize(),
@@ -691,15 +697,13 @@ private fun TransactionsScreen(data: FinanceOverview, months: List<MonthlySnapsh
         }
         if (months.size > 1) {
             item {
-                Row(
-                    modifier = Modifier.horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    ChoiceChip("Alle Monate", monthKey == "all") { monthKey = "all" }
-                    months.forEach { month ->
-                        ChoiceChip(month.shortLabel, monthKey == month.key) { monthKey = month.key }
-                    }
-                }
+                MonthNavigation(months, selectedMonth, onPrevious = {
+                    val index = months.indexOf(selectedMonth)
+                    if (index in 0 until months.lastIndex) selectMonth(months[index + 1].key)
+                }, onNext = {
+                    val index = months.indexOf(selectedMonth)
+                    if (index > 0) selectMonth(months[index - 1].key)
+                }, onChoose = { showMonthPicker = true })
             }
         }
         item {
@@ -736,6 +740,12 @@ private fun TransactionsScreen(data: FinanceOverview, months: List<MonthlySnapsh
         }
         if (filtered.isEmpty()) item { EmptyNote("Keine passenden Umsätze gefunden.") }
     }
+    if (showMonthPicker) {
+        MonthPicker(months, selectedMonth, onSelect = { key ->
+            selectMonth(key)
+            showMonthPicker = false
+        }, onDismiss = { showMonthPicker = false })
+    }
     if (showCategoryFilter) {
         AlertDialog(
             onDismissRequest = { showCategoryFilter = false },
@@ -757,6 +767,79 @@ private fun TransactionsScreen(data: FinanceOverview, months: List<MonthlySnapsh
             confirmButton = { TextButton(onClick = { showCategoryFilter = false }) { Text("Schließen", color = Purple) } }
         )
     }
+}
+
+@Composable
+private fun MonthNavigation(
+    months: List<MonthlySnapshot>,
+    selected: MonthlySnapshot?,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit,
+    onChoose: () -> Unit
+) {
+    val index = months.indexOf(selected)
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        TextButton(onClick = onPrevious, enabled = index in 0 until months.lastIndex,
+            modifier = Modifier.width(48.dp)) {
+            Text("‹", color = if (index in 0 until months.lastIndex) Purple else Muted,
+                fontSize = 25.sp)
+        }
+        TextButton(onClick = onChoose, modifier = Modifier.weight(1f)) {
+            Text((selected?.label ?: "Alle Monate") + " ▾", color = Ink,
+                fontSize = 14.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
+        }
+        TextButton(onClick = onNext, enabled = index > 0, modifier = Modifier.width(48.dp)) {
+            Text("›", color = if (index > 0) Purple else Muted, fontSize = 25.sp)
+        }
+    }
+}
+
+@Composable
+private fun MonthPicker(
+    months: List<MonthlySnapshot>,
+    selected: MonthlySnapshot?,
+    onSelect: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val years = months.mapNotNull { it.key.take(4).toIntOrNull() }.distinct()
+    var year by remember(selected?.key) {
+        mutableIntStateOf(selected?.key?.take(4)?.toIntOrNull() ?: years.first())
+    }
+    val available = months.map { it.key }.toSet()
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Panel,
+        title = { Text("Monat wählen", color = Ink, fontWeight = FontWeight.SemiBold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                TextButton(onClick = { onSelect("all") }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Alle Monate", color = if (selected == null) Purple else Ink)
+                }
+                Row(Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    years.forEach { option ->
+                        ChoiceChip(option.toString(), year == option) { year = option }
+                    }
+                }
+                (1..12).chunked(3).forEach { row ->
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        row.forEach { number ->
+                            val key = "%04d-%02d".format(Locale.ROOT, year, number)
+                            val enabled = key in available
+                            val name = Month.of(number).getDisplayName(TextStyle.SHORT, Locale.GERMAN)
+                                .replaceFirstChar { it.titlecase(Locale.GERMAN) }
+                            TextButton(onClick = { onSelect(key) }, enabled = enabled,
+                                modifier = Modifier.weight(1f)) {
+                                Text(name, color = if (!enabled) Muted.copy(alpha = 0.4f)
+                                    else if (selected?.key == key) Purple else Ink, fontSize = 12.sp)
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Schließen", color = Purple) } }
+    )
 }
 
 @Composable
