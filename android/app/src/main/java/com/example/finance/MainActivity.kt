@@ -1454,7 +1454,7 @@ private fun DailyRefreshSchedule(refresh: BankRefreshStatus?) {
         }.getOrNull() ?: return@mapNotNull null
         if (localTime.toLocalDate() == today) localTime.hour to attempt.outcome else null
     }.toMap()
-    val hours = listOf(8, 12, 14, 17, 21)
+    val hours = listOf(8, 12, 17, 21)
 
     Column(Modifier.fillMaxWidth().padding(horizontal = 4.dp)) {
         SectionHeading("Bankabrufe", "Heute")
